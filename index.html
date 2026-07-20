@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<meta name="theme-color" content="#0f1115" />
+<title>여행 정산</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --surface: #1a1d24;
+    --surface-2: #242832;
+    --line: #2e333e;
+    --text: #f3f5f9;
+    --muted: #8b93a3;
+    --faint: #5c6474;
+    --accent: #6a8cff;
+    --accent-press: #5678f0;
+    --pos: #35d6a0;
+    --neg: #ff6b6b;
+    --radius: 16px;
+    --safe-b: env(safe-area-inset-bottom, 0px);
+    --safe-t: env(safe-area-inset-top, 0px);
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Pretendard",
+                 "Segoe UI", "Malgun Gothic", system-ui, sans-serif;
+    font-size: 16px;
+    line-height: 1.4;
+    -webkit-font-smoothing: antialiased;
+    overscroll-behavior-y: none;
+  }
+  button { font-family: inherit; color: inherit; cursor: pointer; border: none; background: none; }
+  input { font-family: inherit; }
+
+  #app { max-width: 480px; margin: 0 auto; min-height: 100%; position: relative; }
+  .screen { display: none; flex-direction: column; min-height: 100vh; min-height: 100dvh;
+            padding: calc(var(--safe-t) + 8px) 20px calc(var(--safe-b) + 20px); }
+  .screen.active { display: flex; }
+
+  /* ── generic bits ── */
+  .top { display: flex; align-items: center; justify-content: space-between;
+         min-height: 44px; margin-bottom: 4px; }
+  .top h1 { font-size: 17px; font-weight: 700; margin: 0; letter-spacing: -0.01em; }
+  .link-btn { color: var(--accent); font-size: 15px; font-weight: 600; padding: 8px; }
+  .ghost-btn { color: var(--muted); font-size: 15px; padding: 8px 4px; }
+  .spacer { flex: 1; }
+
+  .field-label { font-size: 13px; color: var(--muted); margin: 0 0 8px; font-weight: 600; }
+  .text-input {
+    width: 100%; background: var(--surface); border: 1px solid var(--line);
+    border-radius: 12px; color: var(--text); font-size: 17px; padding: 15px 16px;
+    outline: none; transition: border-color .15s;
+  }
+  .text-input:focus { border-color: var(--accent); }
+  .text-input::placeholder { color: var(--faint); }
+
+  .primary {
+    width: 100%; background: var(--accent); color: #0c1020; font-size: 18px;
+    font-weight: 700; padding: 17px; border-radius: 14px; transition: transform .08s, background .15s;
+  }
+  .primary:active { transform: scale(0.985); background: var(--accent-press); }
+  .primary:disabled { opacity: .4; }
+
+  /* ── input (main) screen ── */
+  #screen-input { justify-content: flex-start; }
+  .amount-wrap { text-align: center; padding: 26px 0 18px; }
+  .cur-toggle { display: inline-flex; background: var(--surface); border: 1px solid var(--line);
+                border-radius: 999px; padding: 3px; margin-bottom: 20px; }
+  .cur-toggle button { font-size: 14px; font-weight: 700; color: var(--muted);
+                       padding: 7px 18px; border-radius: 999px; transition: all .15s; }
+  .cur-toggle button.on { background: var(--surface-2); color: var(--text); }
+
+  .amount-line { display: flex; align-items: baseline; justify-content: center; gap: 6px; }
+  .cur-sym { font-size: 34px; font-weight: 600; color: var(--muted); }
+  .amount-field {
+    background: transparent; border: none; outline: none; color: var(--text);
+    font-size: 56px; font-weight: 800; letter-spacing: -0.02em; text-align: center;
+    width: 100%; max-width: 320px; padding: 0; caret-color: var(--accent);
+  }
+  .amount-field::placeholder { color: var(--faint); }
+
+  .cats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 9px; margin: 8px 0 18px; }
+  .cat {
+    display: flex; flex-direction: column; align-items: center; gap: 5px;
+    background: var(--surface); border: 1.5px solid var(--line); border-radius: 14px;
+    padding: 12px 4px; transition: all .13s;
+  }
+  .cat .emoji { font-size: 22px; line-height: 1; }
+  .cat .lbl { font-size: 12px; color: var(--muted); font-weight: 600; }
+  .cat.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--surface)); }
+  .cat.on .lbl { color: var(--text); }
+  .cat:active { transform: scale(0.96); }
+
+  .note-input { margin-bottom: 12px; }
+
+  .who-bar {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+    padding: 13px 15px; margin-bottom: 14px; font-size: 15px;
+  }
+  .who-bar .who-text { color: var(--text); }
+  .who-bar .who-text b { font-weight: 700; }
+  .who-bar .chev { color: var(--muted); font-size: 13px; }
+
+  /* expandable who panel */
+  .who-panel { background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+               padding: 14px 15px; margin-bottom: 14px; display: none; }
+  .who-panel.open { display: block; }
+  .who-panel h4 { font-size: 13px; color: var(--muted); margin: 2px 0 10px; font-weight: 600; }
+  .chip-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+  .chip {
+    background: var(--surface-2); border: 1.5px solid transparent; border-radius: 999px;
+    padding: 8px 14px; font-size: 14px; font-weight: 600; color: var(--muted); transition: all .12s;
+  }
+  .chip.sel { color: var(--text); border-color: var(--accent);
+              background: color-mix(in srgb, var(--accent) 16%, var(--surface-2)); }
+  .chip:active { transform: scale(0.95); }
+  .chip-row.split .chip.sel::before { content: "✓ "; color: var(--accent); }
+
+  /* ── status screen ── */
+  .stat-hero { text-align: center; padding: 20px 0 24px; }
+  .stat-hero .total { font-size: 38px; font-weight: 800; letter-spacing: -0.02em; }
+  .stat-hero .avg { color: var(--muted); font-size: 14px; margin-top: 6px; }
+  .cur-group + .cur-group { margin-top: 6px; }
+
+  .balances { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+              padding: 6px 4px; margin-bottom: 20px; }
+  .bal-row { display: flex; align-items: center; justify-content: space-between;
+             padding: 13px 14px; }
+  .bal-row + .bal-row { border-top: 1px solid var(--line); }
+  .bal-name { font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .bal-name .me-tag { font-size: 11px; color: var(--accent); font-weight: 700; }
+  .bal-amt { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .bal-amt.pos { color: var(--pos); }
+  .bal-amt.neg { color: var(--neg); }
+  .bal-amt.zero { color: var(--faint); }
+
+  .section-title { font-size: 13px; color: var(--muted); font-weight: 700; margin: 8px 4px 10px; }
+
+  .exp-list { display: flex; flex-direction: column; gap: 0; }
+  .exp-item { display: flex; align-items: center; gap: 12px; padding: 12px 6px; }
+  .exp-item + .exp-item { border-top: 1px solid var(--line); }
+  .exp-emoji { width: 40px; height: 40px; border-radius: 11px; background: var(--surface);
+               display: flex; align-items: center; justify-content: center; font-size: 20px; flex: 0 0 auto; }
+  .exp-mid { flex: 1; min-width: 0; }
+  .exp-title { font-weight: 600; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .exp-sub { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+  .exp-amt { font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  .settle-btn { margin-top: 18px; background: var(--surface-2); color: var(--text);
+                border: 1px solid var(--line); border-radius: 14px; padding: 16px; width: 100%;
+                font-size: 16px; font-weight: 700; }
+  .settle-btn:active { transform: scale(0.99); }
+
+  .settle-box { margin-top: 14px; }
+  .settle-row { display: flex; align-items: center; gap: 10px; background: var(--surface);
+                border: 1px solid var(--line); border-radius: 12px; padding: 14px 15px; margin-bottom: 8px;
+                font-size: 15px; }
+  .settle-row .from { font-weight: 700; }
+  .settle-row .arrow { color: var(--accent); font-weight: 700; }
+  .settle-row .to { font-weight: 700; }
+  .settle-row .amt { margin-left: auto; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .settle-done { text-align: center; color: var(--muted); padding: 24px; font-size: 15px; }
+
+  .empty { text-align: center; color: var(--faint); padding: 40px 20px; font-size: 15px; }
+
+  /* ── identity / create ── */
+  .center-col { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 18px; }
+  .hero-title { font-size: 26px; font-weight: 800; letter-spacing: -0.02em; text-align: center; }
+  .hero-sub { color: var(--muted); font-size: 15px; text-align: center; margin-top: -8px; }
+  .name-chips { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+  .name-chip { background: var(--surface); border: 1.5px solid var(--line); border-radius: 999px;
+               padding: 12px 20px; font-size: 16px; font-weight: 600; transition: all .12s; }
+  .name-chip:active { transform: scale(0.95); border-color: var(--accent); }
+
+  /* ── toast ── */
+  #toast { position: fixed; left: 50%; bottom: calc(var(--safe-b) + 30px); transform: translateX(-50%) translateY(20px);
+           background: var(--pos); color: #062018; font-weight: 700; font-size: 15px;
+           padding: 12px 22px; border-radius: 999px; opacity: 0; pointer-events: none;
+           transition: all .25s; z-index: 50; box-shadow: 0 8px 24px rgba(0,0,0,.4); }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  #toast.err { background: var(--neg); color: #2a0808; }
+
+  /* ── modal (edit/delete) ── */
+  .modal-back { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: none;
+                align-items: flex-end; justify-content: center; z-index: 40; }
+  .modal-back.show { display: flex; }
+  .modal { background: var(--surface); border-top-left-radius: 20px; border-top-right-radius: 20px;
+           width: 100%; max-width: 480px; padding: 20px 20px calc(var(--safe-b) + 20px); }
+  .modal h3 { margin: 4px 0 4px; font-size: 17px; }
+  .modal .msub { color: var(--muted); font-size: 14px; margin-bottom: 18px; }
+  .modal .m-btn { width: 100%; padding: 15px; border-radius: 12px; font-size: 16px; font-weight: 700;
+                  margin-bottom: 9px; background: var(--surface-2); }
+  .modal .m-btn.danger { color: var(--neg); }
+  .modal .m-btn.cancel { color: var(--muted); background: transparent; }
+
+  .loading { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--muted); }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- CREATE ROOM -->
+  <section id="screen-create" class="screen">
+    <div class="center-col">
+      <div>
+        <div class="hero-title">✈️ 여행 정산</div>
+        <div class="hero-sub">새 여행 방을 만들어요</div>
+      </div>
+      <div>
+        <p class="field-label">여행 이름</p>
+        <input id="create-name" class="text-input" placeholder="예: 제주도 여행" maxlength="24" />
+      </div>
+      <div>
+        <p class="field-label">기본 통화</p>
+        <div class="cur-toggle" id="create-cur">
+          <button data-cur="KRW" class="on">₩ 원</button>
+          <button data-cur="JPY">¥ 엔</button>
+        </div>
+      </div>
+      <div>
+        <p class="field-label">내 이름 (총무)</p>
+        <input id="create-me" class="text-input" placeholder="예: 민수" maxlength="12" />
+      </div>
+      <button id="create-go" class="primary">방 만들기</button>
+    </div>
+  </section>
+
+  <!-- IDENTITY -->
+  <section id="screen-identity" class="screen">
+    <div class="center-col">
+      <div>
+        <div class="hero-title" id="ident-room">여행 방</div>
+        <div class="hero-sub">누구세요? 이름을 골라주세요</div>
+      </div>
+      <div class="name-chips" id="ident-chips"></div>
+      <div>
+        <p class="field-label">목록에 없으면 새로 입력</p>
+        <input id="ident-new" class="text-input" placeholder="새 이름 입력 후 확인" maxlength="12" />
+      </div>
+      <button id="ident-add" class="primary">확인</button>
+    </div>
+  </section>
+
+  <!-- INPUT (MAIN) -->
+  <section id="screen-input" class="screen">
+    <div class="top">
+      <h1 id="input-room">여행</h1>
+      <button class="link-btn" id="go-status">현황 →</button>
+    </div>
+
+    <div class="amount-wrap">
+      <div class="cur-toggle" id="input-cur">
+        <button data-cur="KRW">₩ 원</button>
+        <button data-cur="JPY">¥ 엔</button>
+      </div>
+      <div class="amount-line">
+        <span class="cur-sym" id="amt-sym">₩</span>
+        <input id="amount" class="amount-field" inputmode="numeric" placeholder="0" />
+      </div>
+    </div>
+
+    <div class="cats" id="cats"></div>
+
+    <input id="note" class="text-input note-input" placeholder="내용 (선택) — 예: 저녁 삼겹살" maxlength="30" />
+
+    <div class="who-bar" id="who-bar">
+      <span class="who-text" id="who-text">—</span>
+      <span class="chev">바꾸기 ▾</span>
+    </div>
+    <div class="who-panel" id="who-panel">
+      <h4>낸 사람</h4>
+      <div class="chip-row" id="payer-chips"></div>
+      <h4>나눠 갖는 사람</h4>
+      <div class="chip-row split" id="split-chips"></div>
+    </div>
+
+    <div class="spacer"></div>
+    <button id="save-btn" class="primary">저장</button>
+  </section>
+
+  <!-- STATUS -->
+  <section id="screen-status" class="screen">
+    <div class="top">
+      <button class="ghost-btn" id="status-back">‹ 입력</button>
+      <h1 id="status-room">현황</h1>
+      <button class="link-btn" id="go-history">내역</button>
+    </div>
+    <div class="stat-hero" id="stat-hero"></div>
+    <div class="section-title">잔액</div>
+    <div class="balances" id="balances"></div>
+    <button class="settle-btn" id="settle-btn">🧮 정산하기</button>
+    <div class="settle-box" id="settle-box"></div>
+  </section>
+
+  <!-- HISTORY -->
+  <section id="screen-history" class="screen">
+    <div class="top">
+      <button class="ghost-btn" id="history-back">‹ 현황</button>
+      <h1>전체 내역</h1>
+      <span style="width:44px"></span>
+    </div>
+    <div class="exp-list" id="history-list"></div>
+  </section>
+
+  <!-- LOADING -->
+  <section id="screen-loading" class="screen active">
+    <div class="loading">불러오는 중…</div>
+  </section>
+
+</div>
+
+<div id="toast"></div>
+
+<div class="modal-back" id="modal-back">
+  <div class="modal">
+    <h3 id="modal-title">지출</h3>
+    <div class="msub" id="modal-sub"></div>
+    <button class="m-btn" id="modal-edit">✏️ 수정</button>
+    <button class="m-btn danger" id="modal-delete">🗑 삭제</button>
+    <button class="m-btn cancel" id="modal-cancel">닫기</button>
+  </div>
+</div>
+
+<script src="config.js"></script>
+<script src="vendor/supabase.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

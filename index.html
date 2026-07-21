@@ -215,6 +215,22 @@
   .trip-switch { font-size: 17px; font-weight: 700; letter-spacing: -0.01em; padding: 8px 2px 8px 0;
                  color: var(--text); display: flex; align-items: center; gap: 5px; }
   .trip-switch .caret { color: var(--muted); font-size: 12px; }
+
+  /* ── member management ── */
+  .members-box { display: flex; flex-direction: column; gap: 0; background: var(--surface);
+                 border: 1px solid var(--line); border-radius: var(--radius); padding: 4px 4px; }
+  .mem-row { display: flex; align-items: center; justify-content: space-between; padding: 12px 12px; }
+  .mem-row + .mem-row { border-top: 1px solid var(--line); }
+  .mem-name { font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .mem-name .me-tag { font-size: 11px; color: var(--accent); font-weight: 700; }
+  .mem-del { color: var(--neg); font-size: 20px; line-height: 1; padding: 4px 8px; border-radius: 8px; }
+  .mem-del:active { background: color-mix(in srgb, var(--neg) 18%, transparent); }
+  .mem-locked { color: var(--faint); font-size: 12px; }
+  .member-add { display: flex; gap: 8px; margin-top: 10px; }
+  .member-add .text-input { flex: 1; }
+  .member-add-btn { flex: 0 0 auto; background: var(--surface-2); border: 1px solid var(--line);
+                    border-radius: 12px; padding: 0 20px; font-size: 15px; font-weight: 700; color: var(--text); }
+  .member-add-btn:active { transform: scale(0.97); }
 </style>
 </head>
 <body>
@@ -326,6 +342,13 @@
     <div class="settle-box" id="settle-box"></div>
     <div class="section-title" style="margin-top:22px">지출 <span style="font-weight:400; color:var(--faint)">— 탭해서 현장정산 처리</span></div>
     <div class="exp-list" id="status-exp-list"></div>
+
+    <div class="section-title" style="margin-top:22px">멤버 <span style="font-weight:400; color:var(--faint)">— 추가 / 삭제</span></div>
+    <div class="members-box" id="members-box"></div>
+    <div class="member-add">
+      <input id="member-new" class="text-input" placeholder="새 멤버 이름" maxlength="12" />
+      <button id="member-add-btn" class="member-add-btn">추가</button>
+    </div>
   </section>
 
   <!-- HISTORY -->

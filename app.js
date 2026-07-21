@@ -274,8 +274,66 @@
 
     // expense list on status (tap to mark on-the-spot settled)
     renderExpenseList($("status-exp-list"), state.expenses, "아직 지출이 없어요.");
+    renderMembers();
     $("settle-box").innerHTML = "";
     $("settle-btn").textContent = "🧮 정산하기";
+  }
+
+  // ── member management ──
+  function memberHasExpenses(id) {
+    return state.expenses.some((e) =>
+      e.payer_id === id || (e.participant_ids || []).includes(id));
+  }
+
+  function renderMembers() {
+    const box = $("members-box");
+    box.innerHTML = "";
+    if (!state.members.length) { box.innerHTML = `<div class="empty">멤버가 없어요</div>`; return; }
+    state.members.forEach((m) => {
+      const row = document.createElement("div");
+      row.className = "mem-row";
+      const meTag = m.id === state.me ? `<span class="me-tag">나</span>` : "";
+      let right;
+      if (m.id === state.me) {
+        right = `<span class="mem-locked">본인</span>`;
+      } else if (memberHasExpenses(m.id)) {
+        right = `<span class="mem-locked">지출 있음</span>`;
+      } else {
+        right = "";
+      }
+      row.innerHTML = `<span class="mem-name">${escapeHtml(m.name)}${meTag}</span>`;
+      if (right) {
+        row.insertAdjacentHTML("beforeend", right);
+      } else {
+        const del = document.createElement("button");
+        del.className = "mem-del";
+        del.textContent = "×";
+        del.title = "삭제";
+        del.onclick = () => deleteMember(m);
+        row.appendChild(del);
+      }
+      box.appendChild(row);
+    });
+  }
+
+  async function addMember() {
+    const name = $("member-new").value.trim();
+    if (!name) { toast("이름을 입력하세요", true); return; }
+    if (state.members.some((m) => m.name === name)) { toast("같은 이름이 이미 있어요", true); return; }
+    const { error } = await sb.from("members").insert({ room_id: state.room.id, name });
+    if (error) { toast("추가 실패: " + error.message, true); return; }
+    $("member-new").value = "";
+    toast(name + " 추가됨");
+    await refetch();
+  }
+
+  async function deleteMember(m) {
+    if (m.id === state.me) { toast("본인은 삭제할 수 없어요", true); return; }
+    if (memberHasExpenses(m.id)) { toast("지출 내역이 있어 삭제할 수 없어요", true); return; }
+    const { error } = await sb.from("members").delete().eq("id", m.id);
+    if (error) { toast("삭제 실패: " + error.message, true); return; }
+    toast(m.name + " 삭제됨");
+    await refetch();
   }
 
   function renderSettlement() {
@@ -561,6 +619,8 @@
     $("status-back").onclick = () => show("screen-input");
     $("go-history").onclick = () => { renderHistory(); show("screen-history"); };
     $("settle-btn").onclick = renderSettlement;
+    $("member-add-btn").onclick = addMember;
+    $("member-new").addEventListener("keydown", (e) => { if (e.key === "Enter") addMember(); });
 
     // history
     $("history-back").onclick = () => show("screen-status");

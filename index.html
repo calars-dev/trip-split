@@ -235,6 +235,9 @@
                  border: 1px solid color-mix(in srgb, var(--neg) 45%, var(--line));
                  border-radius: 12px; padding: 14px; font-size: 15px; font-weight: 700; }
   .delete-trip:active { background: color-mix(in srgb, var(--neg) 14%, transparent); }
+  .whoami { text-align: center; color: var(--muted); font-size: 13.5px; margin: -12px 0 16px; }
+  .whoami b { color: var(--text); }
+  .whoami-change { color: var(--accent); font-size: 13.5px; font-weight: 600; margin-left: 8px; }
 </style>
 </head>
 <body>
@@ -282,6 +285,7 @@
   <!-- IDENTITY -->
   <section id="screen-identity" class="screen">
     <div class="center-col">
+      <button class="ghost-btn" id="ident-back" style="display:none; align-self:flex-start; padding-left:0">‹ 취소</button>
       <div>
         <div class="hero-title" id="ident-room">여행 방</div>
         <div class="hero-sub">누구세요? 이름을 골라주세요</div>
@@ -340,6 +344,7 @@
       <button class="link-btn" id="go-history">내역</button>
     </div>
     <div class="stat-hero" id="stat-hero"></div>
+    <div class="whoami">나: <b id="whoami-name">-</b><button class="whoami-change" id="change-me">내가 아니에요? 바꾸기</button></div>
     <div class="section-title">잔액</div>
     <div class="balances" id="balances"></div>
     <button class="settle-btn" id="settle-btn">🧮 정산하기</button>

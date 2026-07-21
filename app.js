@@ -295,6 +295,7 @@
     // expense list on status (tap to mark on-the-spot settled)
     renderExpenseList($("status-exp-list"), state.expenses, "아직 지출이 없어요.");
     renderMembers();
+    $("whoami-name").textContent = memberName(state.me);
     $("delete-trip-btn").style.display = isOwner(state.room.id) ? "block" : "none";
     $("settle-box").innerHTML = "";
     $("settle-btn").textContent = "🧮 정산하기";
@@ -554,6 +555,12 @@
       wrap.appendChild(b);
     });
   }
+  function openIdentityChange() {
+    $("ident-back").style.display = "block";
+    renderIdentity();
+    show("screen-identity");
+  }
+
   async function addIdentity() {
     const name = $("ident-new").value.trim();
     if (!name) { toast("이름을 입력하세요", true); return; }
@@ -619,6 +626,7 @@
     if (savedMe && state.members.some((m) => m.id === savedMe)) {
       enterApp(savedMe);
     } else {
+      $("ident-back").style.display = "none"; // first join: no cancel
       renderIdentity();
       show("screen-identity");
     }
@@ -644,6 +652,8 @@
     // identity
     $("ident-add").onclick = addIdentity;
     $("ident-new").addEventListener("keydown", (e) => { if (e.key === "Enter") addIdentity(); });
+    $("ident-back").onclick = () => show("screen-status");
+    $("change-me").onclick = openIdentityChange;
 
     // input screen
     $("input-cur").querySelectorAll("button").forEach((b) => {

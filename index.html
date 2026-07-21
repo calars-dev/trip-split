@@ -151,6 +151,9 @@
   .exp-title { font-weight: 600; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .exp-sub { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
   .exp-amt { font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .exp-item.settled { opacity: .5; }
+  .exp-item.settled .exp-amt { text-decoration: line-through; }
+  .exp-badge { color: var(--pos); font-weight: 700; }
 
   .settle-btn { margin-top: 18px; background: var(--surface-2); color: var(--text);
                 border: 1px solid var(--line); border-radius: 14px; padding: 16px; width: 100%;
@@ -200,14 +203,39 @@
   .modal .m-btn.cancel { color: var(--muted); background: transparent; }
 
   .loading { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--muted); }
+
+  /* ── home (my trips) ── */
+  .trip-list { display: flex; flex-direction: column; gap: 10px; }
+  .trip-row { display: flex; align-items: center; justify-content: space-between; gap: 10px;
+              background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
+              padding: 16px 18px; text-align: left; transition: all .12s; }
+  .trip-row:active { transform: scale(0.985); border-color: var(--accent); }
+  .trip-row .t-name { font-size: 16px; font-weight: 700; }
+  .trip-row .t-arrow { color: var(--muted); font-size: 15px; }
+  .trip-switch { font-size: 17px; font-weight: 700; letter-spacing: -0.01em; padding: 8px 2px 8px 0;
+                 color: var(--text); display: flex; align-items: center; gap: 5px; }
+  .trip-switch .caret { color: var(--muted); font-size: 12px; }
 </style>
 </head>
 <body>
 <div id="app">
 
+  <!-- HOME (MY TRIPS) -->
+  <section id="screen-home" class="screen">
+    <div class="center-col">
+      <div>
+        <div class="hero-title">✈️ 내 여행</div>
+        <div class="hero-sub">참여 중인 여행을 골라요</div>
+      </div>
+      <div class="trip-list" id="home-list"></div>
+      <button id="home-new" class="primary">＋ 새 여행 만들기</button>
+    </div>
+  </section>
+
   <!-- CREATE ROOM -->
   <section id="screen-create" class="screen">
     <div class="center-col">
+      <button class="ghost-btn" id="create-back" style="display:none; align-self:flex-start; padding-left:0">‹ 내 여행</button>
       <div>
         <div class="hero-title">✈️ 여행 정산</div>
         <div class="hero-sub">새 여행 방을 만들어요</div>
@@ -250,7 +278,7 @@
   <!-- INPUT (MAIN) -->
   <section id="screen-input" class="screen">
     <div class="top">
-      <h1 id="input-room">여행</h1>
+      <button class="trip-switch" id="input-room"><span id="input-room-name">여행</span> <span class="caret">⌄</span></button>
       <button class="link-btn" id="go-status">현황 →</button>
     </div>
 
@@ -296,6 +324,8 @@
     <div class="balances" id="balances"></div>
     <button class="settle-btn" id="settle-btn">🧮 정산하기</button>
     <div class="settle-box" id="settle-box"></div>
+    <div class="section-title" style="margin-top:22px">지출 <span style="font-weight:400; color:var(--faint)">— 탭해서 현장정산 처리</span></div>
+    <div class="exp-list" id="status-exp-list"></div>
   </section>
 
   <!-- HISTORY -->
@@ -321,6 +351,7 @@
   <div class="modal">
     <h3 id="modal-title">지출</h3>
     <div class="msub" id="modal-sub"></div>
+    <button class="m-btn" id="modal-settle">✓ 현장정산 완료로 표시</button>
     <button class="m-btn" id="modal-edit">✏️ 수정</button>
     <button class="m-btn danger" id="modal-delete">🗑 삭제</button>
     <button class="m-btn cancel" id="modal-cancel">닫기</button>

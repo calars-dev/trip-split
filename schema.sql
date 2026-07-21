@@ -26,6 +26,7 @@ create table if not exists public.expenses (
   category        text,
   note            text,
   participant_ids uuid[] not null default '{}',
+  settled         boolean not null default false,  -- 현장에서 바로 정산됨 → 최종 정산에서 제외
   created_at      timestamptz not null default now()
 );
 

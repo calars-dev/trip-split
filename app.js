@@ -50,6 +50,21 @@
   const rememberMe = (roomId, memberId) => localStorage.setItem(meKey(roomId), memberId);
   const recallMe = (roomId) => localStorage.getItem(meKey(roomId));
 
+  // ── localStorage: my trips list ──
+  const ROOMS_KEY = "tripsplit_rooms";
+  function getSavedRooms() {
+    try { return JSON.parse(localStorage.getItem(ROOMS_KEY)) || []; } catch (e) { return []; }
+  }
+  function saveRoomToList(room) {
+    const list = getSavedRooms().filter((r) => r.id !== room.id);
+    list.unshift({ id: room.id, name: room.name }); // most-recent first
+    localStorage.setItem(ROOMS_KEY, JSON.stringify(list));
+  }
+  function removeRoomFromList(roomId) {
+    localStorage.setItem(ROOMS_KEY, JSON.stringify(getSavedRooms().filter((r) => r.id !== roomId)));
+  }
+  const goHome = () => { location.href = location.pathname; };
+
   // ── id generator (readable, url-safe) ──
   function genRoomId() {
     const s = "abcdefghijkmnpqrstuvwxyz23456789";
@@ -86,6 +101,7 @@
   function computeSettlement() {
     const balances = {}; // cur -> memberId -> net
     for (const e of state.expenses) {
+      if (e.settled) continue; // on-the-spot payments excluded from settlement
       const cur = e.currency || "KRW";
       balances[cur] = balances[cur] || {};
       const parts = (e.participant_ids && e.participant_ids.length) ? e.participant_ids : [e.payer_id];
@@ -129,7 +145,7 @@
   // ═══════════════════ RENDER ═══════════════════
   function renderAll() {
     if (state.room) {
-      $("input-room").textContent = state.room.name;
+      $("input-room-name").textContent = state.room.name;
       $("status-room").textContent = state.room.name;
     }
     renderWho();
@@ -256,8 +272,8 @@
       box.appendChild(row);
     });
 
-    // recent expenses (top 5) reuse history renderer style
-    // (kept minimal on status; full list in history)
+    // expense list on status (tap to mark on-the-spot settled)
+    renderExpenseList($("status-exp-list"), state.expenses, "아직 지출이 없어요.");
     $("settle-box").innerHTML = "";
     $("settle-btn").textContent = "🧮 정산하기";
   }
@@ -280,30 +296,37 @@
       </div>`).join("");
   }
 
-  function renderHistory() {
-    const list = $("history-list");
-    if (!state.expenses.length) {
-      list.innerHTML = `<div class="empty">아직 등록된 지출이 없어요.<br>입력 화면에서 첫 지출을 넣어보세요.</div>`;
+  function expenseItem(e) {
+    const cur = e.currency || "KRW";
+    const parts = (e.participant_ids && e.participant_ids.length) ? e.participant_ids : [e.payer_id];
+    const item = document.createElement("button");
+    item.className = "exp-item" + (e.settled ? " settled" : "");
+    item.style.width = "100%";
+    item.style.textAlign = "left";
+    const badge = e.settled ? ` · <span class="exp-badge">✓정산완료</span>` : "";
+    item.innerHTML = `
+      <span class="exp-emoji">${EMOJI[e.category] || "💸"}</span>
+      <span class="exp-mid">
+        <span class="exp-title">${e.note ? escapeHtml(e.note) : (e.category || "지출")}</span>
+        <span class="exp-sub">${memberName(e.payer_id)} 냄 · ${parts.length}명${badge}</span>
+      </span>
+      <span class="exp-amt">${money(e.amount, cur)}</span>`;
+    item.onclick = () => openExpenseModal(e);
+    return item;
+  }
+
+  function renderExpenseList(listEl, items, emptyMsg) {
+    if (!items.length) {
+      listEl.innerHTML = `<div class="empty">${emptyMsg}</div>`;
       return;
     }
-    list.innerHTML = "";
-    state.expenses.forEach((e) => {
-      const cur = e.currency || "KRW";
-      const parts = (e.participant_ids && e.participant_ids.length) ? e.participant_ids : [e.payer_id];
-      const item = document.createElement("button");
-      item.className = "exp-item";
-      item.style.width = "100%";
-      item.style.textAlign = "left";
-      item.innerHTML = `
-        <span class="exp-emoji">${EMOJI[e.category] || "💸"}</span>
-        <span class="exp-mid">
-          <span class="exp-title">${e.note ? escapeHtml(e.note) : (e.category || "지출")}</span>
-          <span class="exp-sub">${memberName(e.payer_id)} 냄 · ${parts.length}명</span>
-        </span>
-        <span class="exp-amt">${money(e.amount, cur)}</span>`;
-      item.onclick = () => openExpenseModal(e);
-      list.appendChild(item);
-    });
+    listEl.innerHTML = "";
+    items.forEach((e) => listEl.appendChild(expenseItem(e)));
+  }
+
+  function renderHistory() {
+    renderExpenseList($("history-list"), state.expenses,
+      "아직 등록된 지출이 없어요.<br>입력 화면에서 첫 지출을 넣어보세요.");
   }
 
   function escapeHtml(s) {
@@ -359,10 +382,22 @@
     modalExpense = e;
     const cur = e.currency || "KRW";
     $("modal-title").textContent = (e.note || e.category || "지출");
-    $("modal-sub").textContent = `${memberName(e.payer_id)} 냄 · ${money(e.amount, cur)}`;
+    $("modal-sub").textContent = `${memberName(e.payer_id)} 냄 · ${money(e.amount, cur)}`
+      + (e.settled ? " · ✓정산완료" : "");
+    $("modal-settle").textContent = e.settled ? "↩ 정산완료 해제" : "✓ 현장정산 완료로 표시";
     $("modal-back").classList.add("show");
   }
   function closeModal() { $("modal-back").classList.remove("show"); modalExpense = null; }
+
+  async function toggleSettled() {
+    const e = modalExpense;
+    const next = !e.settled;
+    closeModal();
+    const { error } = await sb.from("expenses").update({ settled: next }).eq("id", e.id);
+    if (error) { toast("실패: " + error.message, true); return; }
+    toast(next ? "현장정산 처리됨 — 최종 정산에서 제외" : "정산완료 해제됨");
+    await refetch();
+  }
 
   function editExpense() {
     const e = modalExpense;
@@ -436,6 +471,7 @@
 
   function enterApp(meId) {
     state.me = meId;
+    saveRoomToList(state.room); // remember this trip on this device
     freshDraft();
     $("save-btn").textContent = "저장";
     renderCats();
@@ -444,11 +480,29 @@
     setTimeout(() => $("amount").focus(), 100);
   }
 
+  // ── home (my trips) ──
+  function renderHome() {
+    const list = getSavedRooms();
+    const box = $("home-list");
+    box.innerHTML = "";
+    list.forEach((r) => {
+      const b = document.createElement("button");
+      b.className = "trip-row";
+      b.innerHTML = `<span class="t-name">${escapeHtml(r.name)}</span><span class="t-arrow">→</span>`;
+      b.onclick = () => { location.search = "?r=" + r.id; };
+      box.appendChild(b);
+    });
+  }
+
   // ═══════════════════ BOOT ═══════════════════
   async function boot() {
     const params = new URLSearchParams(location.search);
     const roomId = params.get("r");
-    if (!roomId) { show("screen-create"); return; }
+    if (!roomId) {
+      if (getSavedRooms().length) { renderHome(); show("screen-home"); }
+      else show("screen-create");
+      return;
+    }
 
     show("screen-loading");
     let room;
@@ -471,6 +525,13 @@
 
   // ═══════════════════ WIRE EVENTS ═══════════════════
   function wire() {
+    // home (my trips)
+    $("home-new").onclick = () => {
+      $("create-back").style.display = getSavedRooms().length ? "block" : "none";
+      show("screen-create");
+    };
+    $("create-back").onclick = () => { renderHome(); show("screen-home"); };
+
     // create screen
     $("create-cur").querySelectorAll("button").forEach((b) => {
       b.onclick = () => { renderCurToggle("create-cur", b.dataset.cur); };
@@ -493,6 +554,7 @@
     });
     $("who-bar").onclick = () => $("who-panel").classList.toggle("open");
     $("save-btn").onclick = saveExpense;
+    $("input-room").onclick = goHome;
     $("go-status").onclick = () => { renderStatus(); show("screen-status"); };
 
     // status
@@ -506,6 +568,7 @@
     // modal
     $("modal-cancel").onclick = closeModal;
     $("modal-back").onclick = (e) => { if (e.target === $("modal-back")) closeModal(); };
+    $("modal-settle").onclick = toggleSettled;
     $("modal-edit").onclick = editExpense;
     $("modal-delete").onclick = deleteExpense;
   }

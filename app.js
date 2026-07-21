@@ -65,6 +65,26 @@
   }
   const goHome = () => { location.href = location.pathname; };
 
+  // ── ownership (only the creating device can delete the trip) ──
+  const ownerKey = (roomId) => "tripsplit_owner_" + roomId;
+  const markOwner = (roomId) => localStorage.setItem(ownerKey(roomId), "1");
+  const isOwner = (roomId) => localStorage.getItem(ownerKey(roomId)) === "1";
+  function forgetRoomLocal(roomId) {
+    localStorage.removeItem(meKey(roomId));
+    localStorage.removeItem(ownerKey(roomId));
+    removeRoomFromList(roomId);
+  }
+
+  // ── generic confirm modal ──
+  let confirmCb = null;
+  function openConfirm(title, msg, onYes) {
+    $("confirm-title").textContent = title;
+    $("confirm-msg").innerHTML = msg;
+    confirmCb = onYes;
+    $("confirm-back").classList.add("show");
+  }
+  function closeConfirm() { $("confirm-back").classList.remove("show"); confirmCb = null; }
+
   // ── id generator (readable, url-safe) ──
   function genRoomId() {
     const s = "abcdefghijkmnpqrstuvwxyz23456789";
@@ -275,8 +295,25 @@
     // expense list on status (tap to mark on-the-spot settled)
     renderExpenseList($("status-exp-list"), state.expenses, "아직 지출이 없어요.");
     renderMembers();
+    $("delete-trip-btn").style.display = isOwner(state.room.id) ? "block" : "none";
     $("settle-box").innerHTML = "";
     $("settle-btn").textContent = "🧮 정산하기";
+  }
+
+  function deleteTrip() {
+    if (!isOwner(state.room.id)) { toast("방을 만든 사람만 삭제할 수 있어요", true); return; }
+    openConfirm(
+      "이 여행을 삭제할까요?",
+      `<b>${escapeHtml(state.room.name)}</b>의 모든 지출·멤버가 <b>모두에게서</b> 영구 삭제돼요. 되돌릴 수 없어요.`,
+      async () => {
+        const rid = state.room.id;
+        closeConfirm();
+        const { error } = await sb.from("rooms").delete().eq("id", rid);
+        if (error) { toast("삭제 실패: " + error.message, true); return; }
+        forgetRoomLocal(rid);
+        toast("여행이 삭제됐어요");
+        setTimeout(goHome, 600);
+      });
   }
 
   // ── member management ──
@@ -498,6 +535,7 @@
     const { data: mem, error: mErr } = await sb.from("members").insert({ room_id: id, name: meName }).select().single();
     if (mErr) { btn.disabled = false; toast("멤버 생성 실패", true); return; }
     rememberMe(id, mem.id);
+    markOwner(id); // this device created the trip → can delete it
     // put slug in URL and boot
     history.replaceState(null, "", "?r=" + id);
     btn.disabled = false;
@@ -566,7 +604,12 @@
     let room;
     try { room = await loadRoom(roomId); }
     catch (err) { toast("연결 오류: " + err.message, true); show("screen-create"); return; }
-    if (!room) { toast("방을 찾을 수 없어요", true); show("screen-create"); return; }
+    if (!room) {
+      forgetRoomLocal(roomId); // deleted or gone → drop from my list
+      toast("방을 찾을 수 없어요 (삭제됐을 수 있어요)", true);
+      goHome();
+      return;
+    }
 
     state.room = room;
     await refetch();
@@ -621,6 +664,12 @@
     $("settle-btn").onclick = renderSettlement;
     $("member-add-btn").onclick = addMember;
     $("member-new").addEventListener("keydown", (e) => { if (e.key === "Enter") addMember(); });
+    $("delete-trip-btn").onclick = deleteTrip;
+
+    // confirm modal
+    $("confirm-no").onclick = closeConfirm;
+    $("confirm-yes").onclick = () => { if (confirmCb) confirmCb(); };
+    $("confirm-back").onclick = (e) => { if (e.target === $("confirm-back")) closeConfirm(); };
 
     // history
     $("history-back").onclick = () => show("screen-status");

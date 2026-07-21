@@ -231,6 +231,10 @@
   .member-add-btn { flex: 0 0 auto; background: var(--surface-2); border: 1px solid var(--line);
                     border-radius: 12px; padding: 0 20px; font-size: 15px; font-weight: 700; color: var(--text); }
   .member-add-btn:active { transform: scale(0.97); }
+  .delete-trip { width: 100%; margin-top: 30px; background: transparent; color: var(--neg);
+                 border: 1px solid color-mix(in srgb, var(--neg) 45%, var(--line));
+                 border-radius: 12px; padding: 14px; font-size: 15px; font-weight: 700; }
+  .delete-trip:active { background: color-mix(in srgb, var(--neg) 14%, transparent); }
 </style>
 </head>
 <body>
@@ -349,6 +353,8 @@
       <input id="member-new" class="text-input" placeholder="새 멤버 이름" maxlength="12" />
       <button id="member-add-btn" class="member-add-btn">추가</button>
     </div>
+
+    <button id="delete-trip-btn" class="delete-trip" style="display:none">🗑 이 여행 삭제</button>
   </section>
 
   <!-- HISTORY -->
@@ -369,6 +375,15 @@
 </div>
 
 <div id="toast"></div>
+
+<div class="modal-back" id="confirm-back">
+  <div class="modal">
+    <h3 id="confirm-title">삭제할까요?</h3>
+    <div class="msub" id="confirm-msg"></div>
+    <button class="m-btn danger" id="confirm-yes">삭제</button>
+    <button class="m-btn cancel" id="confirm-no">취소</button>
+  </div>
+</div>
 
 <div class="modal-back" id="modal-back">
   <div class="modal">

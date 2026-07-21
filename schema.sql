@@ -46,6 +46,12 @@ create policy "anon all rooms"    on public.rooms    for all using (true) with c
 create policy "anon all members"  on public.members  for all using (true) with check (true);
 create policy "anon all expenses" on public.expenses for all using (true) with check (true);
 
+-- ── Table privileges ───────────────────────────────────────────────
+-- Tables created via the SQL editor don't auto-grant to the anon role;
+-- grant explicitly so the link-based (anon) client can read/write.
+grant usage on schema public to anon, authenticated;
+grant select, insert, update, delete on public.rooms, public.members, public.expenses to anon, authenticated;
+
 -- ── Realtime ───────────────────────────────────────────────────────
 -- Push live changes to every connected client.
 alter publication supabase_realtime add table public.rooms;

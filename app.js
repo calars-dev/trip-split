@@ -14,6 +14,12 @@
   const EMOJI = Object.fromEntries(CATEGORIES.map((c) => [c.key, c.emoji]));
   const CUR = { KRW: "₩", JPY: "¥" };
 
+  // ── FX ──
+  // Everything settles in KRW. A foreign-currency expense carries the rate it was
+  // saved with, so past settlement numbers never shift when the market moves.
+  const FX_API = "https://api.frankfurter.dev/v1/"; // ECB reference rates, no key needed
+  const FALLBACK_JPY_KRW = 9.0; // last resort: offline since the trip was created
+
   // ── app state ──
   const state = {
     room: null,
@@ -25,6 +31,7 @@
 
   const $ = (id) => document.getElementById(id);
   const fmt = (n) => Math.round(n).toLocaleString("en-US");
+  const trimZeros = (s) => s.replace(/\.?0+$/, ""); // "908.40" -> "908.4", "900.00" -> "900"
   const money = (n, cur) => (CUR[cur] || "") + fmt(n);
   const memberName = (id) => (state.members.find((m) => m.id === id) || {}).name || "?";
 
@@ -109,6 +116,61 @@
     renderAll();
   }
 
+  // ═══════════════════ FX ═══════════════════
+  function todayStr() {
+    const d = new Date();
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  }
+
+  // KRW per 1 JPY on the given date. Returns {rate, date} or null if unreachable.
+  // A weekend/holiday date answers with the prior business day, and says so in `date`.
+  async function fetchRate(dateStr) {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 2500);
+      const res = await fetch(FX_API + dateStr + "?base=JPY&symbols=KRW", { signal: ctrl.signal });
+      clearTimeout(timer);
+      if (!res.ok) return null;
+      const j = await res.json();
+      const rate = j && j.rates && j.rates.KRW;
+      return rate ? { rate, date: j.date || dateStr } : null;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  // Keep the room's fallback rate fresh. Returns true if it changed.
+  async function warmRoomRate() {
+    if (!state.room) return false;
+    const r = await fetchRate(todayStr());
+    if (!r) return false;
+    if (state.room.base_rate_date === r.date && Number(state.room.base_rate_jpy) === r.rate) return false;
+    state.room.base_rate_jpy = r.rate;
+    state.room.base_rate_date = r.date;
+    await sb.from("rooms").update({ base_rate_jpy: r.rate, base_rate_date: r.date }).eq("id", state.room.id);
+    return true;
+  }
+
+  // The rate a brand-new JPY expense would get if the API is unreachable right now.
+  function currentJpyRate() {
+    const base = state.room && state.room.base_rate_jpy;
+    return base ? { rate: Number(base), source: "room" } : { rate: FALLBACK_JPY_KRW, source: "fallback" };
+  }
+
+  // KRW per 1 unit of this expense's currency, and where that number came from.
+  function rateOf(e) {
+    if ((e.currency || "KRW") === "KRW") return { rate: 1, source: "krw" };
+    if (e.rate_krw) return { rate: Number(e.rate_krw), source: e.rate_source || "api" };
+    return currentJpyRate(); // pre-migration rows: fall back to the room rate
+  }
+
+  const krwAmount = (e) => Math.round(e.amount * rateOf(e).rate);
+  // Flag rows whose rate is a stand-in rather than the real rate of that day.
+  const isEstimated = (e) => {
+    const s = rateOf(e).source;
+    return s === "room" || s === "fallback";
+  };
+
   function subscribeRealtime() {
     sb.channel("room-" + state.room.id)
       .on("postgres_changes", { event: "*", schema: "public", table: "expenses", filter: "room_id=eq." + state.room.id }, refetch)
@@ -117,47 +179,44 @@
   }
 
   // ═══════════════════ SETTLEMENT ═══════════════════
-  // Returns { balances: {currency: {memberId: net}}, transfers: {currency: [{from,to,amount}]} }
+  // Single KRW ledger — foreign-currency expenses are converted first.
+  // Returns { balances: {memberId: net}, transfers: [{from,to,amount}] }, all in KRW.
   function computeSettlement() {
-    const balances = {}; // cur -> memberId -> net
+    const balances = {}; // memberId -> net KRW
     for (const e of state.expenses) {
       if (e.settled) continue; // on-the-spot payments excluded from settlement
-      const cur = e.currency || "KRW";
-      balances[cur] = balances[cur] || {};
+      // convert once per expense, then split — otherwise per-person rounding drifts
+      const total = krwAmount(e);
       const parts = (e.participant_ids && e.participant_ids.length) ? e.participant_ids : [e.payer_id];
-      const each = e.amount / parts.length;
+      const each = total / parts.length;
       // payer fronted the whole amount
-      balances[cur][e.payer_id] = (balances[cur][e.payer_id] || 0) + e.amount;
+      balances[e.payer_id] = (balances[e.payer_id] || 0) + total;
       // each participant owes their share
       let assigned = 0;
       parts.forEach((pid, i) => {
         // absorb rounding remainder on the last participant
-        const share = (i === parts.length - 1) ? (e.amount - assigned) : Math.round(each);
+        const share = (i === parts.length - 1) ? (total - assigned) : Math.round(each);
         assigned += (i === parts.length - 1) ? 0 : Math.round(each);
-        balances[cur][pid] = (balances[cur][pid] || 0) - share;
+        balances[pid] = (balances[pid] || 0) - share;
       });
     }
-    // greedy min-transfer per currency
-    const transfers = {};
-    for (const cur in balances) {
-      const creditors = [], debtors = [];
-      for (const mid in balances[cur]) {
-        const v = Math.round(balances[cur][mid]);
-        if (v > 0) creditors.push({ mid, v });
-        else if (v < 0) debtors.push({ mid, v: -v });
-      }
-      creditors.sort((a, b) => b.v - a.v);
-      debtors.sort((a, b) => b.v - a.v);
-      const list = [];
-      let ci = 0, di = 0;
-      while (ci < creditors.length && di < debtors.length) {
-        const pay = Math.min(creditors[ci].v, debtors[di].v);
-        if (pay > 0) list.push({ from: debtors[di].mid, to: creditors[ci].mid, amount: pay });
-        creditors[ci].v -= pay; debtors[di].v -= pay;
-        if (creditors[ci].v === 0) ci++;
-        if (debtors[di].v === 0) di++;
-      }
-      transfers[cur] = list;
+    // greedy min-transfer
+    const creditors = [], debtors = [];
+    for (const mid in balances) {
+      const v = Math.round(balances[mid]);
+      if (v > 0) creditors.push({ mid, v });
+      else if (v < 0) debtors.push({ mid, v: -v });
+    }
+    creditors.sort((a, b) => b.v - a.v);
+    debtors.sort((a, b) => b.v - a.v);
+    const transfers = [];
+    let ci = 0, di = 0;
+    while (ci < creditors.length && di < debtors.length) {
+      const pay = Math.min(creditors[ci].v, debtors[di].v);
+      if (pay > 0) transfers.push({ from: debtors[di].mid, to: creditors[ci].mid, amount: pay });
+      creditors[ci].v -= pay; debtors[di].v -= pay;
+      if (creditors[ci].v === 0) ci++;
+      if (debtors[di].v === 0) di++;
     }
     return { balances, transfers };
   }
@@ -183,6 +242,10 @@
       payerId: state.me,
       participants: new Set(state.members.map((m) => m.id)),
       editingId: null,
+      // rate carried over when editing, so a later edit doesn't re-price the expense
+      rateKrw: null,
+      rateDate: null,
+      rateSource: null,
     };
   }
 
@@ -210,6 +273,7 @@
     // sync currency toggle + symbol
     renderCurToggle("input-cur", d.currency);
     $("amt-sym").textContent = CUR[d.currency];
+    renderAmountPreview();
     // who summary
     const payer = memberName(d.payerId);
     const n = d.participants.size;
@@ -240,29 +304,18 @@
     });
   }
 
-  function currenciesInUse() {
-    const set = new Set(state.expenses.map((e) => e.currency || "KRW"));
-    if (set.size === 0) set.add(state.room.default_currency || "KRW");
-    return [...set];
-  }
-
   function renderStatus() {
     if (!state.room) return;
-    // hero: total + avg per currency
-    const totals = {};
-    state.expenses.forEach((e) => {
-      const c = e.currency || "KRW";
-      totals[c] = (totals[c] || 0) + e.amount;
-    });
+    // hero: total + avg, all in KRW
+    const total = state.expenses.reduce((sum, e) => sum + krwAmount(e), 0);
     const hero = $("stat-hero");
     const memberCount = state.members.length || 1;
-    if (Object.keys(totals).length === 0) {
-      hero.innerHTML = `<div class="total">${money(0, state.room.default_currency)}</div>
+    if (state.expenses.length === 0) {
+      hero.innerHTML = `<div class="total">${money(0, "KRW")}</div>
         <div class="avg">아직 지출이 없어요</div>`;
     } else {
-      hero.innerHTML = Object.entries(totals).map(([c, t]) =>
-        `<div class="cur-group"><div class="total">${money(t, c)}</div>
-         <div class="avg">1인 평균 ${money(t / memberCount, c)}</div></div>`).join("");
+      hero.innerHTML = `<div class="total">${money(total, "KRW")}</div>
+        <div class="avg">1인 평균 ${money(total / memberCount, "KRW")}</div>`;
     }
 
     // balances
@@ -273,22 +326,12 @@
     state.members.forEach((m) => {
       const row = document.createElement("div");
       row.className = "bal-row";
-      const parts = [];
-      let hasAny = false;
-      currenciesInUse().forEach((c) => {
-        const v = Math.round((balances[c] && balances[c][m.id]) || 0);
-        if (v !== 0) { hasAny = true; parts.push({ v, c }); }
-      });
+      const v = Math.round(balances[m.id] || 0);
       const meTag = m.id === state.me ? `<span class="me-tag">나</span>` : "";
-      let amtHtml;
-      if (!hasAny) {
-        amtHtml = `<span class="bal-amt zero">±0</span>`;
-      } else {
-        amtHtml = parts.map((p) =>
-          `<span class="bal-amt ${p.v > 0 ? "pos" : "neg"}">${p.v > 0 ? "+" : "−"}${money(Math.abs(p.v), p.c).replace(/^[₩¥]/, CUR[p.c])}</span>`
-        ).join(" ");
-      }
-      row.innerHTML = `<span class="bal-name">${m.name}${meTag}</span><span>${amtHtml}</span>`;
+      const amtHtml = v === 0
+        ? `<span class="bal-amt zero">±0</span>`
+        : `<span class="bal-amt ${v > 0 ? "pos" : "neg"}">${v > 0 ? "+" : "−"}${money(Math.abs(v), "KRW")}</span>`;
+      row.innerHTML = `<span class="bal-name">${escapeHtml(m.name)}${meTag}</span><span>${amtHtml}</span>`;
       box.appendChild(row);
     });
 
@@ -377,18 +420,21 @@
   function renderSettlement() {
     const { transfers } = computeSettlement();
     const box = $("settle-box");
-    const all = [];
-    for (const c in transfers) transfers[c].forEach((t) => all.push({ ...t, c }));
-    if (all.length === 0) {
-      box.innerHTML = `<div class="settle-done">✨ 정산 끝! 주고받을 게 없어요.</div>`;
+    // warn when some rows were converted with a stand-in rate rather than that day's
+    const estN = state.expenses.filter((e) => !e.settled && isEstimated(e)).length;
+    const note = estN
+      ? `<div class="settle-note">⚡ ${estN}건은 실시간 환율을 못 받아 기준 환율로 계산했어요. 지출을 탭해 고칠 수 있어요.</div>`
+      : "";
+    if (transfers.length === 0) {
+      box.innerHTML = note + `<div class="settle-done">✨ 정산 끝! 주고받을 게 없어요.</div>`;
       return;
     }
-    box.innerHTML = all.map((t) =>
+    box.innerHTML = note + transfers.map((t) =>
       `<div class="settle-row">
         <span class="from">${memberName(t.from)}</span>
         <span class="arrow">→</span>
         <span class="to">${memberName(t.to)}</span>
-        <span class="amt">${money(t.amount, t.c)}</span>
+        <span class="amt">${money(t.amount, "KRW")}</span>
       </div>`).join("");
   }
 
@@ -400,13 +446,19 @@
     item.style.width = "100%";
     item.style.textAlign = "left";
     const badge = e.settled ? ` · <span class="exp-badge">✓정산완료</span>` : "";
+    const est = isEstimated(e) ? ` · <span class="exp-est">⚡기준환율</span>` : "";
+    // foreign currency keeps its original amount up front, with the KRW value underneath
+    const krwLine = cur === "KRW" ? "" : `<span class="exp-krw">≈${money(krwAmount(e), "KRW")}</span>`;
     item.innerHTML = `
       <span class="exp-emoji">${EMOJI[e.category] || "💸"}</span>
       <span class="exp-mid">
         <span class="exp-title">${e.note ? escapeHtml(e.note) : (e.category || "지출")}</span>
-        <span class="exp-sub">${memberName(e.payer_id)} 냄 · ${parts.length}명${badge}</span>
+        <span class="exp-sub">${memberName(e.payer_id)} 냄 · ${parts.length}명${badge}${est}</span>
       </span>
-      <span class="exp-amt">${money(e.amount, cur)}</span>`;
+      <span class="exp-amt-col">
+        <span class="exp-amt">${money(e.amount, cur)}</span>
+        ${krwLine}
+      </span>`;
     item.onclick = () => openExpenseModal(e);
     return item;
   }
@@ -435,6 +487,16 @@
     return raw ? parseInt(raw, 10) : 0;
   }
 
+  // live "≈₩…" hint under the amount while typing a foreign-currency expense
+  function renderAmountPreview() {
+    const el = $("amt-krw");
+    if (!el || !state.draft) return;
+    if (state.draft.currency === "KRW") { el.textContent = ""; return; }
+    const amt = parseAmount();
+    const r = state.draft.rateKrw ? Number(state.draft.rateKrw) : currentJpyRate().rate;
+    el.textContent = amt ? `≈ ${money(amt * r, "KRW")}  ·  100¥ = ${fmt(r * 100)}원` : "";
+  }
+
   async function saveExpense() {
     const d = state.draft;
     const amount = parseAmount();
@@ -451,6 +513,29 @@
     };
     const btn = $("save-btn");
     btn.disabled = true;
+
+    // attach the exchange rate this expense settles at
+    if (d.currency === "KRW") {
+      payload.rate_krw = null; payload.rate_date = null; payload.rate_source = null;
+    } else if (d.editingId && d.rateKrw) {
+      // editing an existing foreign-currency expense → keep the rate it was saved with
+      payload.rate_krw = d.rateKrw; payload.rate_date = d.rateDate; payload.rate_source = d.rateSource;
+    } else {
+      const live = await fetchRate(todayStr());
+      if (live) {
+        payload.rate_krw = live.rate; payload.rate_date = live.date; payload.rate_source = "api";
+        state.room.base_rate_jpy = live.rate;
+        state.room.base_rate_date = live.date;
+        sb.from("rooms").update({ base_rate_jpy: live.rate, base_rate_date: live.date }).eq("id", state.room.id);
+      } else {
+        // offline: never block the save — use the room rate and flag it for later fixing
+        const f = currentJpyRate();
+        payload.rate_krw = f.rate;
+        payload.rate_date = (state.room && state.room.base_rate_date) || null;
+        payload.rate_source = f.source;
+      }
+    }
+
     let error;
     if (d.editingId) {
       ({ error } = await sb.from("expenses").update(payload).eq("id", d.editingId));
@@ -478,10 +563,44 @@
     modalExpense = e;
     const cur = e.currency || "KRW";
     $("modal-title").textContent = (e.note || e.category || "지출");
-    $("modal-sub").textContent = `${memberName(e.payer_id)} 냄 · ${money(e.amount, cur)}`
-      + (e.settled ? " · ✓정산완료" : "");
+    let sub = `${memberName(e.payer_id)} 냄 · ${money(e.amount, cur)}`;
+    if (cur !== "KRW") {
+      const r = rateOf(e);
+      sub += ` → ${money(krwAmount(e), "KRW")}`
+        + `\n환율 100¥ = ${fmt(r.rate * 100)}원`
+        + (e.rate_date && !isEstimated(e) ? ` (${e.rate_date} 기준)` : "")
+        + (isEstimated(e) ? " ⚡기준환율" : "")
+        + (r.source === "manual" ? " (직접 입력)" : "");
+    }
+    if (e.settled) sub += " · ✓정산완료";
+    $("modal-sub").textContent = sub;
     $("modal-settle").textContent = e.settled ? "↩ 정산완료 해제" : "✓ 현장정산 완료로 표시";
+    $("modal-rate").style.display = cur === "KRW" ? "none" : "block";
     $("modal-back").classList.add("show");
+  }
+
+  // ── manual rate override ──
+  let rateExpense = null;
+  function openRateModal() {
+    const e = modalExpense;
+    rateExpense = e; // our own handle — closeModal() clears modalExpense
+    closeModal();
+    $("rate-sub").textContent = `${money(e.amount, e.currency)} → 현재 ${money(krwAmount(e), "KRW")}`;
+    $("rate-input").value = trimZeros((rateOf(e).rate * 100).toFixed(2));
+    $("rate-back").classList.add("show");
+  }
+  function closeRateModal() { $("rate-back").classList.remove("show"); rateExpense = null; }
+
+  async function saveRate() {
+    const per100 = parseFloat($("rate-input").value.replace(/[^\d.]/g, ""));
+    if (!per100 || per100 <= 0) { toast("환율을 입력하세요", true); return; }
+    const e = rateExpense;
+    closeRateModal();
+    const { error } = await sb.from("expenses")
+      .update({ rate_krw: per100 / 100, rate_source: "manual" }).eq("id", e.id);
+    if (error) { toast("실패: " + error.message, true); return; }
+    toast("환율 수정됨");
+    await refetch();
   }
   function closeModal() { $("modal-back").classList.remove("show"); modalExpense = null; }
 
@@ -500,6 +619,9 @@
     freshDraft();
     state.draft.editingId = e.id;
     state.draft.currency = e.currency || "KRW";
+    state.draft.rateKrw = e.rate_krw;
+    state.draft.rateDate = e.rate_date;
+    state.draft.rateSource = e.rate_source;
     state.draft.category = e.category;
     state.draft.payerId = e.payer_id;
     state.draft.participants = new Set((e.participant_ids && e.participant_ids.length) ? e.participant_ids : [e.payer_id]);
@@ -621,6 +743,8 @@
     state.room = room;
     await refetch();
     subscribeRealtime();
+    // refresh the room's fallback rate in the background; re-render if it moved
+    warmRoomRate().then((changed) => { if (changed) renderAll(); });
 
     const savedMe = recallMe(roomId);
     if (savedMe && state.members.some((m) => m.id === savedMe)) {
@@ -662,6 +786,7 @@
     $("amount").addEventListener("input", (e) => {
       const raw = e.target.value.replace(/[^\d]/g, "");
       e.target.value = raw ? parseInt(raw, 10).toLocaleString("en-US") : "";
+      renderAmountPreview();
     });
     $("who-bar").onclick = () => $("who-panel").classList.toggle("open");
     $("save-btn").onclick = saveExpense;
@@ -690,6 +815,13 @@
     $("modal-settle").onclick = toggleSettled;
     $("modal-edit").onclick = editExpense;
     $("modal-delete").onclick = deleteExpense;
+    $("modal-rate").onclick = openRateModal;
+
+    // rate override modal
+    $("rate-save").onclick = saveRate;
+    $("rate-cancel").onclick = closeRateModal;
+    $("rate-back").onclick = (e) => { if (e.target === $("rate-back")) closeRateModal(); };
+    $("rate-input").addEventListener("keydown", (e) => { if (e.key === "Enter") saveRate(); });
   }
 
   wire();

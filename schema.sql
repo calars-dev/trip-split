@@ -7,6 +7,8 @@ create table if not exists public.rooms (
   id               text primary key,
   name             text not null,
   default_currency text not null default 'KRW',
+  base_rate_jpy    numeric,   -- last JPY->KRW rate any client fetched (offline fallback)
+  base_rate_date   date,
   created_at       timestamptz not null default now()
 );
 
@@ -27,6 +29,9 @@ create table if not exists public.expenses (
   note            text,
   participant_ids uuid[] not null default '{}',
   settled         boolean not null default false,  -- 현장에서 바로 정산됨 → 최종 정산에서 제외
+  rate_krw        numeric,   -- KRW per 1 unit of `currency`, locked in at save time (null for KRW)
+  rate_date       date,      -- business day the rate came from
+  rate_source     text,      -- 'api' | 'room' | 'manual' | 'fallback'
   created_at      timestamptz not null default now()
 );
 

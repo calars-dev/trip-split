@@ -18,6 +18,7 @@
     --accent-press: #5678f0;
     --pos: #35d6a0;
     --neg: #ff6b6b;
+    --warn: #f0b429;
     --radius: 16px;
     --safe-b: env(safe-area-inset-bottom, 0px);
     --safe-t: env(safe-area-inset-top, 0px);
@@ -83,6 +84,8 @@
     width: 100%; max-width: 320px; padding: 0; caret-color: var(--accent);
   }
   .amount-field::placeholder { color: var(--faint); }
+  .amt-krw { color: var(--muted); font-size: 14px; margin-top: 10px; min-height: 20px;
+             font-variant-numeric: tabular-nums; }
 
   .cats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 9px; margin: 8px 0 18px; }
   .cat {
@@ -126,7 +129,6 @@
   .stat-hero { text-align: center; padding: 20px 0 24px; }
   .stat-hero .total { font-size: 38px; font-weight: 800; letter-spacing: -0.02em; }
   .stat-hero .avg { color: var(--muted); font-size: 14px; margin-top: 6px; }
-  .cur-group + .cur-group { margin-top: 6px; }
 
   .balances { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
               padding: 6px 4px; margin-bottom: 20px; }
@@ -151,9 +153,12 @@
   .exp-title { font-weight: 600; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .exp-sub { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
   .exp-amt { font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .exp-amt-col { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; flex: 0 0 auto; }
+  .exp-krw { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .exp-item.settled { opacity: .5; }
   .exp-item.settled .exp-amt { text-decoration: line-through; }
   .exp-badge { color: var(--pos); font-weight: 700; }
+  .exp-est { color: var(--warn); font-weight: 700; }
 
   .settle-btn { margin-top: 18px; background: var(--surface-2); color: var(--text);
                 border: 1px solid var(--line); border-radius: 14px; padding: 16px; width: 100%;
@@ -169,6 +174,7 @@
   .settle-row .to { font-weight: 700; }
   .settle-row .amt { margin-left: auto; font-weight: 800; font-variant-numeric: tabular-nums; }
   .settle-done { text-align: center; color: var(--muted); padding: 24px; font-size: 15px; }
+  .settle-note { color: var(--warn); font-size: 13px; line-height: 1.5; margin-bottom: 10px; padding: 0 2px; }
 
   .empty { text-align: center; color: var(--faint); padding: 40px 20px; font-size: 15px; }
 
@@ -196,7 +202,7 @@
   .modal { background: var(--surface); border-top-left-radius: 20px; border-top-right-radius: 20px;
            width: 100%; max-width: 480px; padding: 20px 20px calc(var(--safe-b) + 20px); }
   .modal h3 { margin: 4px 0 4px; font-size: 17px; }
-  .modal .msub { color: var(--muted); font-size: 14px; margin-bottom: 18px; }
+  .modal .msub { color: var(--muted); font-size: 14px; margin-bottom: 18px; white-space: pre-line; }
   .modal .m-btn { width: 100%; padding: 15px; border-radius: 12px; font-size: 16px; font-weight: 700;
                   margin-bottom: 9px; background: var(--surface-2); }
   .modal .m-btn.danger { color: var(--neg); }
@@ -315,6 +321,7 @@
         <span class="cur-sym" id="amt-sym">₩</span>
         <input id="amount" class="amount-field" inputmode="numeric" placeholder="0" />
       </div>
+      <div class="amt-krw" id="amt-krw"></div>
     </div>
 
     <div class="cats" id="cats"></div>
@@ -395,9 +402,21 @@
     <h3 id="modal-title">지출</h3>
     <div class="msub" id="modal-sub"></div>
     <button class="m-btn" id="modal-settle">✓ 현장정산 완료로 표시</button>
+    <button class="m-btn" id="modal-rate" style="display:none">💱 환율 수정</button>
     <button class="m-btn" id="modal-edit">✏️ 수정</button>
     <button class="m-btn danger" id="modal-delete">🗑 삭제</button>
     <button class="m-btn cancel" id="modal-cancel">닫기</button>
+  </div>
+</div>
+
+<div class="modal-back" id="rate-back">
+  <div class="modal">
+    <h3>환율 수정</h3>
+    <div class="msub" id="rate-sub"></div>
+    <p class="field-label">100¥ = ₩</p>
+    <input id="rate-input" class="text-input" inputmode="decimal" placeholder="예: 908.4" />
+    <button class="m-btn" id="rate-save" style="margin-top:14px">저장</button>
+    <button class="m-btn cancel" id="rate-cancel">취소</button>
   </div>
 </div>
 

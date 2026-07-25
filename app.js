@@ -20,6 +20,16 @@
   const FX_API = "https://api.frankfurter.dev/v1/"; // ECB reference rates, no key needed
   const FALLBACK_JPY_KRW = 9.0; // last resort: offline since the trip was created
 
+  // Set when the DB predates migration-rate.sql. Saving must keep working on an
+  // un-migrated database, so we drop the rate columns and convert at the room rate.
+  let rateColsMissing = false;
+  const isMissingRateCol = (err) => !!err && /rate_krw|rate_date|rate_source|base_rate_/.test(err.message || "");
+  function stripRateCols(p) {
+    const q = Object.assign({}, p);
+    delete q.rate_krw; delete q.rate_date; delete q.rate_source;
+    return q;
+  }
+
   // ── app state ──
   const state = {
     room: null,
@@ -145,9 +155,12 @@
     const r = await fetchRate(todayStr());
     if (!r) return false;
     if (state.room.base_rate_date === r.date && Number(state.room.base_rate_jpy) === r.rate) return false;
+    // keep it in memory regardless — it still drives conversion for this session
     state.room.base_rate_jpy = r.rate;
     state.room.base_rate_date = r.date;
-    await sb.from("rooms").update({ base_rate_jpy: r.rate, base_rate_date: r.date }).eq("id", state.room.id);
+    const { error } = await sb.from("rooms")
+      .update({ base_rate_jpy: r.rate, base_rate_date: r.date }).eq("id", state.room.id);
+    if (isMissingRateCol(error)) rateColsMissing = true;
     return true;
   }
 
@@ -536,15 +549,20 @@
       }
     }
 
-    let error;
-    if (d.editingId) {
-      ({ error } = await sb.from("expenses").update(payload).eq("id", d.editingId));
-    } else {
-      ({ error } = await sb.from("expenses").insert(payload));
+    const send = (p) => d.editingId
+      ? sb.from("expenses").update(p).eq("id", d.editingId)
+      : sb.from("expenses").insert(p);
+
+    let { error } = await send(rateColsMissing ? stripRateCols(payload) : payload);
+    if (error && isMissingRateCol(error)) {
+      // un-migrated DB: save the expense anyway, converted at the room rate
+      rateColsMissing = true;
+      ({ error } = await send(stripRateCols(payload)));
     }
     btn.disabled = false;
     if (error) { toast("저장 실패: " + error.message, true); return; }
-    toast(d.editingId ? "수정됨" : "저장됨 ✓");
+    toast(rateColsMissing ? "저장됨 (환율 미적용 — SQL 실행 필요)"
+                          : (d.editingId ? "수정됨" : "저장됨 ✓"));
     // reset for next entry
     freshDraft();
     $("amount").value = "";
@@ -598,6 +616,11 @@
     closeRateModal();
     const { error } = await sb.from("expenses")
       .update({ rate_krw: per100 / 100, rate_source: "manual" }).eq("id", e.id);
+    if (isMissingRateCol(error)) {
+      rateColsMissing = true;
+      toast("환율 저장용 칼럼이 없어요 — migration-rate.sql 먼저 실행", true);
+      return;
+    }
     if (error) { toast("실패: " + error.message, true); return; }
     toast("환율 수정됨");
     await refetch();

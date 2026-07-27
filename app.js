@@ -14,6 +14,20 @@
   const EMOJI = Object.fromEntries(CATEGORIES.map((c) => [c.key, c.emoji]));
   const CUR = { KRW: "₩", JPY: "¥" };
 
+  // ── day / slot ──
+  // An expense carries the day of the trip it belongs to, not a calendar date:
+  // "3일차 저녁" is what people actually remember. Day 0 is everything bought
+  // before leaving (flights, accommodation, gear).
+  const SLOTS = [
+    { key: "아침", emoji: "🌅" }, { key: "점심", emoji: "🍜" },
+    { key: "오후", emoji: "☀️" }, { key: "저녁", emoji: "🌆" },
+    { key: "밤",   emoji: "🌙" },
+  ];
+  const SLOT_EMOJI = Object.fromEntries(SLOTS.map((s) => [s.key, s.emoji]));
+  const SLOT_ORDER = Object.fromEntries(SLOTS.map((s, i) => [s.key, i]));
+  const PREP_DAY = 0;
+  const MAX_DAY_CHIPS = 60; // guard: a wildly wrong start date shouldn't spawn 500 chips
+
   // ── FX ──
   // Everything settles in KRW. A foreign-currency expense carries the rate it was
   // saved with, so past settlement numbers never shift when the market moves.
@@ -30,6 +44,24 @@
     return q;
   }
 
+  // Same story for the timeline columns (migration-timeline.sql). `slot`/`seq` are
+  // short enough to appear in unrelated messages, so only match them when quoted.
+  let timelineColsMissing = false;
+  const isMissingTimelineCol = (err) =>
+    !!err && /day_index|start_date|['"]slot['"]|['"]seq['"]/.test(err.message || "");
+  function stripTimelineCols(p) {
+    const q = Object.assign({}, p);
+    delete q.day_index; delete q.slot; delete q.seq;
+    return q;
+  }
+  // Drop whatever this particular database turned out not to have.
+  function sanitize(p) {
+    let q = p;
+    if (rateColsMissing) q = stripRateCols(q);
+    if (timelineColsMissing) q = stripTimelineCols(q);
+    return q;
+  }
+
   // ── app state ──
   const state = {
     room: null,
@@ -37,6 +69,7 @@
     expenses: [],
     me: null, // member id
     draft: null, // {amount, currency, category, note, payerId, participants:Set, editingId}
+    filter: { memberId: null, mode: "paid" }, // timeline: null = everyone, mode paid|share
   };
 
   const $ = (id) => document.getElementById(id);
@@ -184,6 +217,85 @@
     return s === "room" || s === "fallback";
   };
 
+  // ═══════════════════ DAY / SLOT ═══════════════════
+  const WEEKDAY = ["일", "월", "화", "수", "목", "금", "토"];
+  const dayOf = (e) => (typeof e.day_index === "number" ? e.day_index : null);
+  const slotKeyOf = (e) => e.slot || null;
+  const slotRank = (s) => (s in SLOT_ORDER ? SLOT_ORDER[s] : 99);
+  const dayRank = (d) => (d === null ? 1e9 : d); // unassigned rows sink to the bottom
+
+  // "2026-08-01" -> local midnight. `new Date(str)` would parse it as UTC and
+  // shift the whole trip by a day for anyone east of Greenwich.
+  function parseYmd(s) {
+    if (!s) return null;
+    const p = String(s).slice(0, 10).split("-").map(Number);
+    if (p.length !== 3 || p.some(isNaN)) return null;
+    return new Date(p[0], p[1] - 1, p[2]);
+  }
+  const startDate = () => parseYmd(state.room && state.room.start_date);
+
+  // calendar date of day N (1-based); null while the start date is unknown
+  function dateOfDay(dayIndex) {
+    const s = startDate();
+    if (!s || dayIndex < 1) return null;
+    const d = new Date(s);
+    d.setDate(d.getDate() + (dayIndex - 1));
+    return d;
+  }
+  const dayLabel = (i) => (i === PREP_DAY ? "여행 전 준비" : i + "일차");
+  function dayDateLabel(i) {
+    const d = dateOfDay(i);
+    return d ? `${d.getMonth() + 1}/${d.getDate()} (${WEEKDAY[d.getDay()]})` : "";
+  }
+
+  // which day of the trip is it right now? day 1 until a start date exists
+  function todayDayIndex() {
+    const s = startDate();
+    if (!s) return 1;
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const diff = Math.round((today - s) / 86400000) + 1;
+    return diff < 1 ? PREP_DAY : Math.min(diff, MAX_DAY_CHIPS);
+  }
+  function slotNow() {
+    const h = new Date().getHours();
+    if (h >= 5 && h < 10) return "아침";
+    if (h >= 10 && h < 14) return "점심";
+    if (h >= 14 && h < 17) return "오후";
+    if (h >= 17 && h < 21) return "저녁";
+    return "밤";
+  }
+  // how far the day picker runs: today, or the latest day already logged
+  function lastDayIndex() {
+    let max = 1;
+    state.expenses.forEach((e) => { if (dayOf(e) > max) max = e.day_index; });
+    return Math.min(Math.max(max, todayDayIndex()), MAX_DAY_CHIPS);
+  }
+  // next order number inside a (day, slot) bucket
+  function nextSeq(dayIndex, slot) {
+    let max = -1;
+    state.expenses.forEach((e) => {
+      if (e.day_index === dayIndex && e.slot === slot && typeof e.seq === "number" && e.seq > max) max = e.seq;
+    });
+    return max + 1;
+  }
+  // rows sharing a bucket, in display order
+  function bucketSiblings(e) {
+    return state.expenses
+      .filter((x) => dayOf(x) === dayOf(e) && slotKeyOf(x) === slotKeyOf(e))
+      .sort((a, b) => (a.seq || 0) - (b.seq || 0) || (new Date(a.created_at) - new Date(b.created_at)));
+  }
+  // one member's share of an expense in KRW — same rounding rule as computeSettlement,
+  // so the filter total and the settlement figure never disagree by a won or two
+  function shareOf(e, memberId) {
+    const parts = (e.participant_ids && e.participant_ids.length) ? e.participant_ids : [e.payer_id];
+    const i = parts.indexOf(memberId);
+    if (i < 0) return 0;
+    const total = krwAmount(e);
+    const each = Math.round(total / parts.length);
+    return i === parts.length - 1 ? total - each * (parts.length - 1) : each;
+  }
+
   function subscribeRealtime() {
     sb.channel("room-" + state.room.id)
       .on("postgres_changes", { event: "*", schema: "public", table: "expenses", filter: "room_id=eq." + state.room.id }, refetch)
@@ -241,8 +353,9 @@
       $("status-room").textContent = state.room.name;
     }
     renderWho();
+    renderWhen();
     renderStatus();
-    renderHistory();
+    renderTimeline();
   }
 
   // draft init
@@ -259,6 +372,12 @@
       rateKrw: null,
       rateDate: null,
       rateSource: null,
+      // when it was spent — prefilled from the clock, changeable by tapping
+      dayIndex: todayDayIndex(),
+      slot: slotNow(),
+      seq: null,
+      origDayIndex: null,
+      origSlot: null,
     };
   }
 
@@ -277,6 +396,41 @@
       el.innerHTML = `<span class="emoji">${c.emoji}</span><span class="lbl">${c.key}</span>`;
       el.onclick = () => { state.draft.category = c.key; renderCats(); };
       wrap.appendChild(el);
+    });
+  }
+
+  // small helper for the chip rows used by the day/slot pickers and the filters
+  function chip(label, on, fn) {
+    const b = document.createElement("button");
+    b.className = "chip" + (on ? " sel" : "");
+    b.textContent = label;
+    b.onclick = fn;
+    return b;
+  }
+
+  function renderWhen() {
+    if (!state.draft) return;
+    const d = state.draft;
+    // "여행 전 준비" has no time of day — nobody remembers when they booked a flight
+    const isPrep = d.dayIndex === PREP_DAY;
+    $("slot-wrap").style.display = isPrep ? "none" : "block";
+    $("when-text").innerHTML = `<b>${dayLabel(d.dayIndex)}</b>`
+      + (isPrep ? "" : ` · ${SLOT_EMOJI[d.slot] || ""}${d.slot}`
+                     + ` <span style="color:var(--faint)">${dayDateLabel(d.dayIndex)}</span>`);
+
+    const dc = $("day-chips"); dc.innerHTML = "";
+    dc.appendChild(chip("🎒 준비", d.dayIndex === PREP_DAY,
+      () => { d.dayIndex = PREP_DAY; renderWhen(); }));
+    // one day past the furthest we know about, so tomorrow can be logged in advance
+    for (let i = 1; i <= Math.min(lastDayIndex() + 1, MAX_DAY_CHIPS); i++) {
+      dc.appendChild(chip(i + "일차", d.dayIndex === i,
+        ((n) => () => { d.dayIndex = n; renderWhen(); })(i)));
+    }
+
+    const sc = $("slot-chips"); sc.innerHTML = "";
+    SLOTS.forEach((s) => {
+      sc.appendChild(chip(s.emoji + " " + s.key, d.slot === s.key,
+        () => { d.slot = s.key; renderWhen(); }));
     });
   }
 
@@ -338,23 +492,66 @@
     if (state.members.length === 0) { box.innerHTML = `<div class="empty">멤버가 없어요</div>`; }
     state.members.forEach((m) => {
       const row = document.createElement("div");
-      row.className = "bal-row";
+      row.className = "bal-row tappable";
       const v = Math.round(balances[m.id] || 0);
       const meTag = m.id === state.me ? `<span class="me-tag">나</span>` : "";
       const amtHtml = v === 0
         ? `<span class="bal-amt zero">±0</span>`
         : `<span class="bal-amt ${v > 0 ? "pos" : "neg"}">${v > 0 ? "+" : "−"}${money(Math.abs(v), "KRW")}</span>`;
       row.innerHTML = `<span class="bal-name">${escapeHtml(m.name)}${meTag}</span><span>${amtHtml}</span>`;
+      row.onclick = () => openTimeline(m.id);
       box.appendChild(row);
     });
 
     // expense list on status (tap to mark on-the-spot settled)
     renderExpenseList($("status-exp-list"), state.expenses, "아직 지출이 없어요.");
     renderMembers();
+    renderStartDate();
     $("whoami-name").textContent = memberName(state.me);
     $("delete-trip-btn").style.display = isOwner(state.room.id) ? "block" : "none";
     $("settle-box").innerHTML = "";
     $("settle-btn").textContent = "🧮 정산하기";
+  }
+
+  // ── trip start date ──
+  // The migration guesses this from the earliest expense, which is a day late
+  // whenever nobody spent anything on the first day. So it stays editable.
+  function renderStartDate() {
+    const btn = $("startdate-btn");
+    const s = startDate();
+    if (s) {
+      btn.classList.remove("unset");
+      $("startdate-text").textContent =
+        `여행 시작 ${s.getMonth() + 1}월 ${s.getDate()}일 (${WEEKDAY[s.getDay()]})`;
+    } else {
+      btn.classList.add("unset");
+      $("startdate-text").textContent = "여행 시작일을 정해주세요";
+    }
+  }
+  function openDateModal() {
+    const s = state.room && state.room.start_date;
+    $("date-input").value = s ? String(s).slice(0, 10) : todayStr();
+    $("date-back").classList.add("show");
+  }
+  function closeDateModal() { $("date-back").classList.remove("show"); }
+
+  async function saveStartDate() {
+    const v = $("date-input").value;
+    if (!v) { toast("날짜를 선택하세요", true); return; }
+    closeDateModal();
+    const { error } = await sb.from("rooms").update({ start_date: v }).eq("id", state.room.id);
+    if (error) {
+      if (isMissingTimelineCol(error)) {
+        timelineColsMissing = true;
+        toast("migration-timeline.sql 먼저 실행해 주세요", true);
+      } else toast("저장 실패: " + error.message, true);
+      return;
+    }
+    state.room.start_date = v;
+    // the day numbering just shifted — re-derive the draft's default
+    if (state.draft && !state.draft.editingId) state.draft.dayIndex = todayDayIndex();
+    toast("시작일 저장됨");
+    renderAll();
   }
 
   function deleteTrip() {
@@ -451,7 +648,8 @@
       </div>`).join("");
   }
 
-  function expenseItem(e) {
+  // `share` (a KRW number) switches the right column to one member's portion
+  function expenseItem(e, share) {
     const cur = e.currency || "KRW";
     const parts = (e.participant_ids && e.participant_ids.length) ? e.participant_ids : [e.payer_id];
     const item = document.createElement("button");
@@ -462,16 +660,17 @@
     const est = isEstimated(e) ? ` · <span class="exp-est">⚡기준환율</span>` : "";
     // foreign currency keeps its original amount up front, with the KRW value underneath
     const krwLine = cur === "KRW" ? "" : `<span class="exp-krw">≈${money(krwAmount(e), "KRW")}</span>`;
+    const amtCol = (typeof share === "number")
+      ? `<span class="exp-amt">${money(share, "KRW")}</span>
+         <span class="tl-share">${parts.length}인 나눔</span>`
+      : `<span class="exp-amt">${money(e.amount, cur)}</span>${krwLine}`;
     item.innerHTML = `
       <span class="exp-emoji">${EMOJI[e.category] || "💸"}</span>
       <span class="exp-mid">
         <span class="exp-title">${e.note ? escapeHtml(e.note) : (e.category || "지출")}</span>
         <span class="exp-sub">${memberName(e.payer_id)} 냄 · ${parts.length}명${badge}${est}</span>
       </span>
-      <span class="exp-amt-col">
-        <span class="exp-amt">${money(e.amount, cur)}</span>
-        ${krwLine}
-      </span>`;
+      <span class="exp-amt-col">${amtCol}</span>`;
     item.onclick = () => openExpenseModal(e);
     return item;
   }
@@ -485,9 +684,141 @@
     items.forEach((e) => listEl.appendChild(expenseItem(e)));
   }
 
-  function renderHistory() {
-    renderExpenseList($("history-list"), state.expenses,
-      "아직 등록된 지출이 없어요.<br>입력 화면에서 첫 지출을 넣어보세요.");
+  // ═══════════════════ TIMELINE ═══════════════════
+  function filteredExpenses() {
+    const f = state.filter;
+    if (!f.memberId) return state.expenses;
+    if (f.mode === "paid") return state.expenses.filter((e) => e.payer_id === f.memberId);
+    return state.expenses.filter((e) => {
+      const parts = (e.participant_ids && e.participant_ids.length) ? e.participant_ids : [e.payer_id];
+      return parts.indexOf(f.memberId) >= 0;
+    });
+  }
+  // what this row contributes to the totals — the member's share in "나눈 것" mode
+  function rowKrw(e) {
+    const f = state.filter;
+    return (f.memberId && f.mode === "share") ? shareOf(e, f.memberId) : krwAmount(e);
+  }
+
+  // -> [{ dayIndex, total, slots: [{ slot, items }] }], earliest day first
+  function groupByDay(items) {
+    const days = new Map();
+    items.forEach((e) => {
+      const d = dayOf(e), s = slotKeyOf(e);
+      if (!days.has(d)) days.set(d, new Map());
+      const slots = days.get(d);
+      if (!slots.has(s)) slots.set(s, []);
+      slots.get(s).push(e);
+    });
+    const byOrder = (a, b) =>
+      (a.seq || 0) - (b.seq || 0) || (new Date(a.created_at) - new Date(b.created_at));
+    const out = [];
+    days.forEach((slots, dayIndex) => {
+      const list = [];
+      slots.forEach((arr, slot) => list.push({ slot, items: arr.sort(byOrder) }));
+      list.sort((a, b) => slotRank(a.slot) - slotRank(b.slot));
+      const total = list.reduce((sum, g) => sum + g.items.reduce((t, e) => t + rowKrw(e), 0), 0);
+      out.push({ dayIndex, slots: list, total });
+    });
+    out.sort((a, b) => dayRank(a.dayIndex) - dayRank(b.dayIndex));
+    return out;
+  }
+
+  function openTimeline(memberId) {
+    state.filter = { memberId: memberId || null, mode: "paid" };
+    renderTimeline();
+    show("screen-history");
+  }
+
+  function renderFilters() {
+    const f = state.filter;
+    const box = $("tl-filters");
+    box.innerHTML = "";
+    box.appendChild(chip("전체", !f.memberId, () => { f.memberId = null; renderTimeline(); }));
+    state.members.forEach((m) => {
+      box.appendChild(chip(m.name, f.memberId === m.id,
+        ((id) => () => { f.memberId = id; renderTimeline(); })(m.id)));
+    });
+
+    const wrap = $("tl-modes-wrap");
+    if (!f.memberId) { wrap.innerHTML = ""; return; }
+    const items = filteredExpenses();
+    const total = items.reduce((s, e) => s + rowKrw(e), 0);
+    wrap.innerHTML = `
+      <div class="tl-modes">
+        <button data-mode="paid" class="${f.mode === "paid" ? "on" : ""}">낸 것</button>
+        <button data-mode="share" class="${f.mode === "share" ? "on" : ""}">나눈 것</button>
+      </div>
+      <div class="tl-sum">${escapeHtml(memberName(f.memberId))} · ${items.length}건 합계
+        <b>${money(total, "KRW")}</b></div>`;
+    wrap.querySelectorAll("button").forEach((b) => {
+      b.onclick = () => { f.mode = b.dataset.mode; renderTimeline(); };
+    });
+  }
+
+  function renderTimeline() {
+    if (!state.room) return;
+    renderFilters();
+    $("tl-notice").innerHTML = timelineColsMissing
+      ? `<div class="tl-notice">⚠️ 일차·시간대를 저장할 칸이 아직 없어요 —
+         <b>migration-timeline.sql</b>을 한 번 실행해 주세요.</div>`
+      : "";
+
+    const box = $("timeline");
+    const items = filteredExpenses();
+    if (!items.length) {
+      box.innerHTML = `<div class="empty">${state.filter.memberId
+        ? "해당하는 지출이 없어요."
+        : "아직 등록된 지출이 없어요.<br>입력 화면에서 첫 지출을 넣어보세요."}</div>`;
+      return;
+    }
+
+    const days = groupByDay(items);
+    const peak = Math.max.apply(null, days.map((d) => d.total).concat([1]));
+    const shareMode = state.filter.memberId && state.filter.mode === "share";
+    box.innerHTML = "";
+    days.forEach((day) => {
+      const wrap = document.createElement("div");
+      wrap.className = "tl-day";
+      const name = day.dayIndex === null ? "❓ 미지정"
+        : (day.dayIndex === PREP_DAY ? "🎒 여행 전 준비" : day.dayIndex + "일차");
+      const date = (day.dayIndex === null || day.dayIndex === PREP_DAY) ? "" : dayDateLabel(day.dayIndex);
+
+      const head = document.createElement("div");
+      head.className = "tl-day-head";
+      head.innerHTML = `<span class="tl-day-num">${name}</span>
+        <span class="tl-day-date">${date}</span>
+        <span class="tl-day-total">${money(day.total, "KRW")}</span>`;
+      wrap.appendChild(head);
+
+      // relative bar — shows at a glance which day the money went
+      const bar = document.createElement("div");
+      bar.className = "tl-bar";
+      bar.innerHTML = `<i style="width:${Math.max(2, Math.round(day.total / peak * 100))}%"></i>`;
+      wrap.appendChild(bar);
+
+      const row = (e) => expenseItem(e, shareMode ? shareOf(e, state.filter.memberId) : undefined);
+      if (day.dayIndex === PREP_DAY) {
+        // prep spending has no time of day, so no spine — just the list
+        const list = document.createElement("div");
+        list.className = "exp-list";
+        day.slots.forEach((g) => g.items.forEach((e) => list.appendChild(row(e))));
+        wrap.appendChild(list);
+      } else {
+        const body = document.createElement("div");
+        body.className = "tl-body";
+        day.slots.forEach((g) => {
+          const sl = document.createElement("div");
+          sl.className = "tl-slot";
+          sl.innerHTML = `<span class="tl-dot">${SLOT_EMOJI[g.slot] || "❓"}</span>
+            <div class="tl-slot-name">${g.slot || "미지정"}</div>`;
+          g.items.forEach((e) => sl.appendChild(row(e)));
+          body.appendChild(sl);
+        });
+        wrap.appendChild(body);
+      }
+      box.appendChild(wrap);
+    });
   }
 
   function escapeHtml(s) {
@@ -515,6 +846,7 @@
     const amount = parseAmount();
     if (!amount || amount <= 0) { toast("금액을 입력하세요", true); return; }
     if (d.participants.size === 0) { toast("나눌 사람을 1명 이상 선택", true); return; }
+    const slot = d.dayIndex === PREP_DAY ? null : d.slot;
     const payload = {
       room_id: state.room.id,
       payer_id: d.payerId,
@@ -523,6 +855,11 @@
       category: d.category || "기타",
       note: $("note").value.trim() || null,
       participant_ids: [...d.participants],
+      day_index: d.dayIndex,
+      slot: slot,
+      // moving an expense to a different bucket puts it at the end of that one
+      seq: (d.editingId && d.dayIndex === d.origDayIndex && slot === d.origSlot && typeof d.seq === "number")
+        ? d.seq : nextSeq(d.dayIndex, slot),
     };
     const btn = $("save-btn");
     btn.disabled = true;
@@ -553,24 +890,32 @@
       ? sb.from("expenses").update(p).eq("id", d.editingId)
       : sb.from("expenses").insert(p);
 
-    let { error } = await send(rateColsMissing ? stripRateCols(payload) : payload);
-    if (error && isMissingRateCol(error)) {
-      // un-migrated DB: save the expense anyway, converted at the room rate
-      rateColsMissing = true;
-      ({ error } = await send(stripRateCols(payload)));
+    // An un-migrated DB rejects columns it doesn't have. Drop them and retry —
+    // saving must never be blocked by a SQL file nobody ran yet. Two rounds
+    // because the rate columns and the timeline columns can both be missing.
+    let { error } = await send(sanitize(payload));
+    for (let i = 0; i < 2 && error; i++) {
+      let dropped = false;
+      if (isMissingRateCol(error) && !rateColsMissing) { rateColsMissing = true; dropped = true; }
+      if (isMissingTimelineCol(error) && !timelineColsMissing) { timelineColsMissing = true; dropped = true; }
+      if (!dropped) break;
+      ({ error } = await send(sanitize(payload)));
     }
     btn.disabled = false;
     if (error) { toast("저장 실패: " + error.message, true); return; }
-    toast(rateColsMissing ? "저장됨 (환율 미적용 — SQL 실행 필요)"
-                          : (d.editingId ? "수정됨" : "저장됨 ✓"));
+    toast(rateColsMissing || timelineColsMissing
+      ? "저장됨 (일부 항목 미적용 — SQL 실행 필요)"
+      : (d.editingId ? "수정됨" : "저장됨 ✓"));
     // reset for next entry
     freshDraft();
     $("amount").value = "";
     $("note").value = "";
     $("save-btn").textContent = "저장";
     $("who-panel").classList.remove("open");
+    $("when-panel").classList.remove("open");
     renderCats();
     renderWho();
+    renderWhen();
     await refetch();
     $("amount").focus();
   }
@@ -591,10 +936,41 @@
         + (r.source === "manual" ? " (직접 입력)" : "");
     }
     if (e.settled) sub += " · ✓정산완료";
+    if (dayOf(e) !== null) sub += `\n${dayLabel(e.day_index)}${e.slot ? " · " + (SLOT_EMOJI[e.slot] || "") + e.slot : ""}`;
     $("modal-sub").textContent = sub;
     $("modal-settle").textContent = e.settled ? "↩ 정산완료 해제" : "✓ 현장정산 완료로 표시";
     $("modal-rate").style.display = cur === "KRW" ? "none" : "block";
+    // reordering only makes sense when something else shares this day+slot
+    const sibs = bucketSiblings(e);
+    const i = sibs.findIndex((x) => x.id === e.id);
+    $("modal-move").style.display = sibs.length > 1 ? "flex" : "none";
+    $("modal-up").disabled = i <= 0;
+    $("modal-down").disabled = i < 0 || i >= sibs.length - 1;
     $("modal-back").classList.add("show");
+  }
+
+  // Renumber the whole bucket instead of swapping two rows: pre-migration rows
+  // have no seq at all, so a swap would be a no-op on them.
+  async function moveExpense(dir) {
+    const e = modalExpense;
+    const list = bucketSiblings(e);
+    const i = list.findIndex((x) => x.id === e.id);
+    const j = i + dir;
+    closeModal();
+    if (i < 0 || j < 0 || j >= list.length) return;
+    list.splice(j, 0, list.splice(i, 1)[0]);
+    const writes = list
+      .map((x, k) => (x.seq === k ? null : sb.from("expenses").update({ seq: k }).eq("id", x.id)))
+      .filter(Boolean);
+    const bad = (await Promise.all(writes)).find((r) => r && r.error);
+    if (bad) {
+      if (isMissingTimelineCol(bad.error)) {
+        timelineColsMissing = true;
+        toast("migration-timeline.sql 먼저 실행해 주세요", true);
+      } else toast("순서 변경 실패: " + bad.error.message, true);
+      return;
+    }
+    await refetch();
   }
 
   // ── manual rate override ──
@@ -648,12 +1024,19 @@
     state.draft.category = e.category;
     state.draft.payerId = e.payer_id;
     state.draft.participants = new Set((e.participant_ids && e.participant_ids.length) ? e.participant_ids : [e.payer_id]);
+    // keep the slot it already sits in; only recompute seq if the user moves it
+    if (dayOf(e) !== null) state.draft.dayIndex = e.day_index;
+    if (e.slot) state.draft.slot = e.slot;
+    state.draft.seq = (typeof e.seq === "number") ? e.seq : null;
+    state.draft.origDayIndex = state.draft.dayIndex;
+    state.draft.origSlot = slotKeyOf(e);
     closeModal();
     show("screen-input");
     $("amount").value = fmt(e.amount);
     $("note").value = e.note || "";
     renderCats();
     renderWho();
+    renderWhen();
     $("save-btn").textContent = "수정 저장";
     toast("수정 모드");
   }
@@ -672,11 +1055,19 @@
     const name = $("create-name").value.trim();
     const meName = $("create-me").value.trim();
     const cur = $("create-cur").querySelector(".on").dataset.cur;
+    const start = $("create-start").value;
     if (!name) { toast("여행 이름을 입력하세요", true); return; }
+    if (!start) { toast("여행 시작일을 선택하세요", true); return; }
     if (!meName) { toast("내 이름을 입력하세요", true); return; }
     const id = genRoomId();
     const btn = $("create-go"); btn.disabled = true;
-    const { error: rErr } = await sb.from("rooms").insert({ id, name, default_currency: cur });
+    let { error: rErr } = await sb.from("rooms")
+      .insert({ id, name, default_currency: cur, start_date: start });
+    if (rErr && isMissingTimelineCol(rErr)) {
+      // un-migrated DB: make the room anyway, the date can be set later
+      timelineColsMissing = true;
+      ({ error: rErr } = await sb.from("rooms").insert({ id, name, default_currency: cur }));
+    }
     if (rErr) { btn.disabled = false; toast("방 생성 실패: " + rErr.message, true); return; }
     const { data: mem, error: mErr } = await sb.from("members").insert({ room_id: id, name: meName }).select().single();
     if (mErr) { btn.disabled = false; toast("멤버 생성 실패", true); return; }
@@ -748,7 +1139,7 @@
     const roomId = params.get("r");
     if (!roomId) {
       if (getSavedRooms().length) { renderHome(); show("screen-home"); }
-      else show("screen-create");
+      else { $("create-start").value = todayStr(); show("screen-create"); }
       return;
     }
 
@@ -784,6 +1175,7 @@
     // home (my trips)
     $("home-new").onclick = () => {
       $("create-back").style.display = getSavedRooms().length ? "block" : "none";
+      if (!$("create-start").value) $("create-start").value = todayStr();
       show("screen-create");
     };
     $("create-back").onclick = () => { renderHome(); show("screen-home"); };
@@ -812,13 +1204,15 @@
       renderAmountPreview();
     });
     $("who-bar").onclick = () => $("who-panel").classList.toggle("open");
+    $("when-bar").onclick = () => $("when-panel").classList.toggle("open");
     $("save-btn").onclick = saveExpense;
     $("input-room").onclick = goHome;
     $("go-status").onclick = () => { renderStatus(); show("screen-status"); };
 
     // status
     $("status-back").onclick = () => show("screen-input");
-    $("go-history").onclick = () => { renderHistory(); show("screen-history"); };
+    $("go-history").onclick = () => openTimeline(null);
+    $("startdate-btn").onclick = openDateModal;
     $("settle-btn").onclick = renderSettlement;
     $("member-add-btn").onclick = addMember;
     $("member-new").addEventListener("keydown", (e) => { if (e.key === "Enter") addMember(); });
@@ -839,6 +1233,13 @@
     $("modal-edit").onclick = editExpense;
     $("modal-delete").onclick = deleteExpense;
     $("modal-rate").onclick = openRateModal;
+    $("modal-up").onclick = () => moveExpense(-1);
+    $("modal-down").onclick = () => moveExpense(1);
+
+    // trip start date modal
+    $("date-save").onclick = saveStartDate;
+    $("date-cancel").onclick = closeDateModal;
+    $("date-back").onclick = (e) => { if (e.target === $("date-back")) closeDateModal(); };
 
     // rate override modal
     $("rate-save").onclick = saveRate;

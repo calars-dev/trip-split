@@ -207,6 +207,7 @@
                   margin-bottom: 9px; background: var(--surface-2); }
   .modal .m-btn.danger { color: var(--neg); }
   .modal .m-btn.cancel { color: var(--muted); background: transparent; }
+  .modal .m-btn:disabled { opacity: .35; }
 
   .loading { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--muted); }
 
@@ -244,6 +245,58 @@
   .whoami { text-align: center; color: var(--muted); font-size: 13.5px; margin: -12px 0 16px; }
   .whoami b { color: var(--text); }
   .whoami-change { color: var(--accent); font-size: 13.5px; font-weight: 600; margin-left: 8px; }
+
+  /* ── trip start date ── */
+  .startdate { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+               background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+               padding: 12px 14px; font-size: 14px; margin-bottom: 18px; }
+  .startdate .sd-text { color: var(--text); }
+  .startdate .sd-edit { margin-left: auto; color: var(--accent); font-weight: 600; font-size: 13.5px; }
+  .startdate.unset { border-color: color-mix(in srgb, var(--warn) 50%, var(--line)); }
+  .startdate.unset .sd-text { color: var(--warn); font-weight: 600; }
+  .bal-row.tappable { cursor: pointer; }
+  .bal-row.tappable:active { background: var(--surface-2); border-radius: 10px; }
+
+  /* ── timeline ── */
+  .tl-filters { display: flex; gap: 8px; overflow-x: auto; padding: 2px 2px 12px; margin: 0 -2px;
+                scrollbar-width: none; }
+  .tl-filters::-webkit-scrollbar { display: none; }
+  .tl-filters .chip { flex: 0 0 auto; }
+  .tl-modes { display: inline-flex; background: var(--surface); border: 1px solid var(--line);
+              border-radius: 999px; padding: 3px; margin-bottom: 12px; }
+  .tl-modes button { font-size: 13px; font-weight: 700; color: var(--muted);
+                     padding: 6px 16px; border-radius: 999px; transition: all .15s; }
+  .tl-modes button.on { background: var(--surface-2); color: var(--text); }
+  .tl-sum { color: var(--muted); font-size: 13.5px; margin: 0 2px 18px; }
+  .tl-sum b { color: var(--text); font-size: 17px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .tl-notice { color: var(--warn); font-size: 13px; line-height: 1.5; margin: 0 2px 14px; }
+
+  .tl-day { margin-bottom: 24px; }
+  .tl-day-head { display: flex; align-items: baseline; gap: 7px; padding: 0 2px; }
+  .tl-day-num { font-size: 16px; font-weight: 800; letter-spacing: -0.01em; }
+  .tl-day-date { color: var(--faint); font-size: 12.5px; }
+  .tl-day-total { margin-left: auto; font-weight: 700; font-size: 14px; font-variant-numeric: tabular-nums; }
+  .tl-bar { height: 4px; border-radius: 2px; background: var(--surface-2);
+            margin: 9px 2px 14px; overflow: hidden; }
+  .tl-bar i { display: block; height: 100%; border-radius: 2px;
+              background: linear-gradient(90deg, var(--accent), #a06aff); }
+
+  .tl-body { position: relative; padding-left: 28px; }
+  .tl-body::before { content: ""; position: absolute; left: 9px; top: 5px; bottom: 12px;
+                     width: 2px; background: var(--line); border-radius: 1px; }
+  .tl-slot { position: relative; }
+  .tl-slot + .tl-slot { margin-top: 12px; }
+  .tl-dot { position: absolute; left: -28px; top: -2px; width: 20px; height: 20px; border-radius: 50%;
+            background: var(--bg); display: flex; align-items: center; justify-content: center; font-size: 13px; }
+  .tl-slot-name { font-size: 12.5px; font-weight: 700; color: var(--muted); letter-spacing: .01em; }
+  .tl-slot .exp-item { padding: 9px 4px; }
+  .tl-slot .exp-item + .exp-item { border-top: 1px solid var(--line); }
+  .tl-slot .exp-emoji { width: 34px; height: 34px; border-radius: 9px; font-size: 17px; }
+  .tl-share { color: var(--faint); font-size: 11.5px; font-weight: 600; }
+
+  /* ── move up/down inside the expense modal ── */
+  .m-move { display: flex; gap: 9px; }
+  .m-move .m-btn { flex: 1; }
 </style>
 </head>
 <body>
@@ -279,6 +332,10 @@
           <button data-cur="KRW" class="on">₩ 원</button>
           <button data-cur="JPY">¥ 엔</button>
         </div>
+      </div>
+      <div>
+        <p class="field-label">여행 시작일 <span style="font-weight:400">— 이 날이 1일차</span></p>
+        <input id="create-start" class="text-input" type="date" />
       </div>
       <div>
         <p class="field-label">내 이름 (총무)</p>
@@ -328,6 +385,19 @@
 
     <input id="note" class="text-input note-input" placeholder="내용 (선택) — 예: 저녁 삼겹살" maxlength="30" />
 
+    <div class="who-bar" id="when-bar">
+      <span class="who-text" id="when-text">—</span>
+      <span class="chev">바꾸기 ▾</span>
+    </div>
+    <div class="who-panel" id="when-panel">
+      <h4>며칠차</h4>
+      <div class="chip-row" id="day-chips"></div>
+      <div id="slot-wrap">
+        <h4>언제</h4>
+        <div class="chip-row" id="slot-chips"></div>
+      </div>
+    </div>
+
     <div class="who-bar" id="who-bar">
       <span class="who-text" id="who-text">—</span>
       <span class="chev">바꾸기 ▾</span>
@@ -348,11 +418,14 @@
     <div class="top">
       <button class="ghost-btn" id="status-back">‹ 입력</button>
       <h1 id="status-room">현황</h1>
-      <button class="link-btn" id="go-history">내역</button>
+      <button class="link-btn" id="go-history">타임라인</button>
     </div>
     <div class="stat-hero" id="stat-hero"></div>
     <div class="whoami">나: <b id="whoami-name">-</b><button class="whoami-change" id="change-me">내가 아니에요? 바꾸기</button></div>
-    <div class="section-title">잔액</div>
+    <button class="startdate" id="startdate-btn">
+      <span>📅</span><span class="sd-text" id="startdate-text">—</span><span class="sd-edit">바꾸기</span>
+    </button>
+    <div class="section-title">잔액 <span style="font-weight:400; color:var(--faint)">— 이름을 탭하면 그 사람 기록만</span></div>
     <div class="balances" id="balances"></div>
     <button class="settle-btn" id="settle-btn">🧮 정산하기</button>
     <div class="settle-box" id="settle-box"></div>
@@ -369,14 +442,17 @@
     <button id="delete-trip-btn" class="delete-trip" style="display:none">🗑 이 여행 삭제</button>
   </section>
 
-  <!-- HISTORY -->
+  <!-- TIMELINE -->
   <section id="screen-history" class="screen">
     <div class="top">
       <button class="ghost-btn" id="history-back">‹ 현황</button>
-      <h1>전체 내역</h1>
+      <h1>타임라인</h1>
       <span style="width:44px"></span>
     </div>
-    <div class="exp-list" id="history-list"></div>
+    <div class="tl-filters" id="tl-filters"></div>
+    <div id="tl-modes-wrap"></div>
+    <div id="tl-notice"></div>
+    <div id="timeline"></div>
   </section>
 
   <!-- LOADING -->
@@ -403,6 +479,10 @@
     <div class="msub" id="modal-sub"></div>
     <button class="m-btn" id="modal-settle">✓ 현장정산 완료로 표시</button>
     <button class="m-btn" id="modal-rate" style="display:none">💱 환율 수정</button>
+    <div class="m-move" id="modal-move" style="display:none">
+      <button class="m-btn" id="modal-up">↑ 위로</button>
+      <button class="m-btn" id="modal-down">↓ 아래로</button>
+    </div>
     <button class="m-btn" id="modal-edit">✏️ 수정</button>
     <button class="m-btn danger" id="modal-delete">🗑 삭제</button>
     <button class="m-btn cancel" id="modal-cancel">닫기</button>
@@ -417,6 +497,16 @@
     <input id="rate-input" class="text-input" inputmode="decimal" placeholder="예: 908.4" />
     <button class="m-btn" id="rate-save" style="margin-top:14px">저장</button>
     <button class="m-btn cancel" id="rate-cancel">취소</button>
+  </div>
+</div>
+
+<div class="modal-back" id="date-back">
+  <div class="modal">
+    <h3>여행 시작일</h3>
+    <div class="msub">이 날이 <b>1일차</b>가 돼요. 그보다 이른 지출은 '여행 전 준비'로 들어가요.</div>
+    <input id="date-input" class="text-input" type="date" />
+    <button class="m-btn" id="date-save" style="margin-top:14px">저장</button>
+    <button class="m-btn cancel" id="date-cancel">취소</button>
   </div>
 </div>
 

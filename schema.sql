@@ -7,6 +7,7 @@ create table if not exists public.rooms (
   id               text primary key,
   name             text not null,
   default_currency text not null default 'KRW',
+  start_date       date,      -- day 1 of the trip; days are counted from here
   base_rate_jpy    numeric,   -- last JPY->KRW rate any client fetched (offline fallback)
   base_rate_date   date,
   created_at       timestamptz not null default now()
@@ -32,11 +33,15 @@ create table if not exists public.expenses (
   rate_krw        numeric,   -- KRW per 1 unit of `currency`, locked in at save time (null for KRW)
   rate_date       date,      -- business day the rate came from
   rate_source     text,      -- 'api' | 'room' | 'manual' | 'fallback'
+  day_index       smallint,  -- 0 = spent before the trip, 1 = day 1, 2 = day 2 …
+  slot            text,      -- 아침 | 점심 | 오후 | 저녁 | 밤
+  seq             int,       -- order within one (day_index, slot) bucket
   created_at      timestamptz not null default now()
 );
 
-create index if not exists idx_members_room  on public.members(room_id);
-create index if not exists idx_expenses_room on public.expenses(room_id);
+create index if not exists idx_members_room     on public.members(room_id);
+create index if not exists idx_expenses_room    on public.expenses(room_id);
+create index if not exists idx_expenses_timeline on public.expenses(room_id, day_index, seq);
 
 -- ── Row Level Security ─────────────────────────────────────────────
 -- Link-based access model (no auth): anon key may do everything.

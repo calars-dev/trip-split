@@ -537,10 +537,52 @@
   }
   function closeDateModal() { $("date-back").classList.remove("show"); }
 
+  // Day 1 always means the start date. So when the start date moves, every
+  // expense stays on the calendar day it actually happened and its day *number*
+  // shifts instead. Anything that ends up before the new start becomes prep.
+  async function shiftDays(from, to) {
+    const a = parseYmd(from), b = parseYmd(to);
+    if (!a || !b) return { delta: 0 };
+    const delta = Math.round((b - a) / 86400000);
+    if (!delta) return { delta: 0 };
+
+    const days = [];
+    state.expenses.forEach((e) => {
+      const d = dayOf(e);
+      if (d > 0 && days.indexOf(d) < 0) days.push(d);
+    });
+    // walk in the direction that never writes onto a day we still have to read
+    days.sort((x, y) => (delta > 0 ? x - y : y - x));
+    for (let i = 0; i < days.length; i++) {
+      const d = days[i], target = Math.max(0, d - delta);
+      if (target === d) continue;
+      // prep has no time of day, so drop the slot on the way in
+      const patch = target === PREP_DAY ? { day_index: PREP_DAY, slot: null } : { day_index: target };
+      const { error } = await sb.from("expenses").update(patch)
+        .eq("room_id", state.room.id).eq("day_index", d);
+      if (error) return { delta: 0, error: error };
+    }
+    return { delta: delta };
+  }
+
+  // Several days can collapse into prep at once, and their seq numbers collide
+  // when they land. Renumber that bucket by when each expense was entered.
+  async function renumberPrep() {
+    const prep = state.expenses
+      .filter((e) => dayOf(e) === PREP_DAY)
+      .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+    for (let i = 0; i < prep.length; i++) {
+      if (prep[i].seq !== i) await sb.from("expenses").update({ seq: i }).eq("id", prep[i].id);
+    }
+  }
+
   async function saveStartDate() {
     const v = $("date-input").value;
     if (!v) { toast("날짜를 선택하세요", true); return; }
+    const prev = state.room.start_date ? String(state.room.start_date).slice(0, 10) : null;
+    if (prev === v) { closeDateModal(); return; }
     closeDateModal();
+
     const { error } = await sb.from("rooms").update({ start_date: v }).eq("id", state.room.id);
     if (error) {
       if (isMissingTimelineCol(error)) {
@@ -550,10 +592,19 @@
       return;
     }
     state.room.start_date = v;
-    // the day numbering just shifted — re-derive the draft's default
+
+    let moved = 0;
+    if (prev) {
+      const r = await shiftDays(prev, v);
+      if (r.error) { toast("일차 이동 실패: " + r.error.message, true); await refetch(); return; }
+      moved = r.delta;
+      if (moved) { await refetch(); await renumberPrep(); }
+    }
     if (state.draft && !state.draft.editingId) state.draft.dayIndex = todayDayIndex();
-    toast("시작일 저장됨");
-    renderAll();
+    toast(moved
+      ? `시작일 변경 · 일차 ${Math.abs(moved)}칸 ${moved > 0 ? "당겨짐" : "밀림"}`
+      : "시작일 저장됨");
+    await refetch();
   }
 
   function deleteTrip() {

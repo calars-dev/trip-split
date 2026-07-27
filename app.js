@@ -44,11 +44,13 @@
     return q;
   }
 
-  // Same story for the timeline columns (migration-timeline.sql). `slot`/`seq` are
-  // short enough to appear in unrelated messages, so only match them when quoted.
+  // Same story for the timeline columns (migration-timeline.sql). Postgres words
+  // these two ways: `column expenses.slot does not exist` and PostgREST's
+  // `Could not find the 'slot' column ... in the schema cache`. Match on whole
+  // words so `expenses_id_seq` and "sequence" don't trip it.
   let timelineColsMissing = false;
   const isMissingTimelineCol = (err) =>
-    !!err && /day_index|start_date|['"]slot['"]|['"]seq['"]/.test(err.message || "");
+    !!err && /day_index|start_date|\bslot\b|\bseq\b/.test(err.message || "");
   function stripTimelineCols(p) {
     const q = Object.assign({}, p);
     delete q.day_index; delete q.slot; delete q.seq;

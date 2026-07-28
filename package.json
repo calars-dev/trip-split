@@ -1,0 +1,11 @@
+{
+  "name": "trip-split",
+  "private": true,
+  "description": "여행 정산 웹앱 — 앱 자체는 의존성이 없다. 여기 적힌 건 테스트용뿐.",
+  "scripts": {
+    "test": "node test/run.js"
+  },
+  "devDependencies": {
+    "jsdom": "^24.0.0"
+  }
+}

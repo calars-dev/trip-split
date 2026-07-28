@@ -425,6 +425,9 @@
 
   // draft init
   function freshDraft() {
+    // the old preview is a blob URL; dropping the draft without releasing it
+    // leaks the image for the life of the page
+    if (state.draft && state.draft.shot) URL.revokeObjectURL(state.draft.shot.preview);
     state.draft = {
       amount: "",
       currency: state.room.default_currency || "KRW",
@@ -844,11 +847,19 @@
     item.onclick = () => openExpenseModal(e);
     // tapping the thumbnail opens the photo, not the expense
     const shot = item.querySelector(".exp-emoji.shot");
-    if (shot) shot.addEventListener("click", (ev) => {
-      ev.stopPropagation();
-      ev.preventDefault();
-      openShot(e.receipt_path);
-    });
+    if (shot) {
+      shot.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        ev.preventDefault();
+        openShot(e.receipt_path);
+      });
+      // a half-finished upload would otherwise leave a broken-image icon
+      // sitting where the category used to be
+      shot.querySelector("img").onerror = () => {
+        shot.className = "exp-emoji";
+        shot.textContent = cat;
+      };
+    }
     return item;
   }
 
@@ -1445,7 +1456,11 @@
     }
     btn.disabled = false;
     if (error) { toast("저장 실패: " + error.message, true); return; }
-    toast(rateColsMissing || timelineColsMissing || receiptColMissing
+    // Only nag about columns whose absence is a surprise. Running without the
+    // rate columns is a deliberate choice here — the ⚡기준환율 badge and the
+    // settlement note already say so, and repeating it on every single save is
+    // just noise about a decision already made.
+    toast(timelineColsMissing || receiptColMissing
       ? "저장됨 (일부 항목 미적용 — SQL 실행 필요)"
       : (d.editingId ? "수정됨" : "저장됨 ✓"));
     // reset for next entry

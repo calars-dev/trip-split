@@ -941,6 +941,19 @@
   // finger, so the surrounding rows reflow exactly where it will land.
   let dragging = null;
   let arming = null;
+
+  // Re-render without the list sliding around: whatever the page height does,
+  // this one row keeps the same spot on screen.
+  function keepRowInPlace(id, render) {
+    const sel = '.tl-row[data-id="' + id + '"]';
+    const el = document.querySelector(sel);
+    const before = el ? el.getBoundingClientRect().top : null;
+    render();
+    if (before === null) return;
+    const after = document.querySelector(sel);
+    if (after) window.scrollBy(0, after.getBoundingClientRect().top - before);
+  }
+
   const HOLD_MS = 320;   // how long a finger must sit still before it drags
   const SLIP_PX = 8;     // travel that means "this was a scroll, not a grab"
 
@@ -1005,13 +1018,12 @@
     const first = document.querySelector('.tl-row[data-id="' + id + '"]');
     if (!first) return;
 
-    // Open up every slot and day as a drop target, then take back the scroll
-    // the new rows just pushed down, so the row stays under the finger.
-    const anchor = first.getBoundingClientRect().top;
-    renderTimeline(true);
+    // Open up every slot and day as a drop target. That adds a lot of height,
+    // so hold this row still on screen or the list jumps out from under the
+    // finger before the drag has even started.
+    keepRowInPlace(id, () => renderTimeline(true));
     const row = document.querySelector('.tl-row[data-id="' + id + '"]');
     if (!row) return;
-    window.scrollBy(0, row.getBoundingClientRect().top - anchor);
 
     // The re-render replaced every row, so the grip that was pressed is now
     // detached and will never see another pointer event. Bind to the new one.
@@ -1019,6 +1031,10 @@
     if (!grip) return;
 
     const r = row.getBoundingClientRect();
+    // The page can't always scroll far enough to keep the row exactly under the
+    // finger (near the bottom it runs out), so pin the grab point inside the row
+    // — otherwise the clone floats off at an angle nowhere near the finger.
+    const grab = Math.max(0, Math.min(clientY - r.top, r.height));
     const e = state.expenses.find((x) => x.id === id);
     const float = document.createElement("div");
     float.className = "tl-float";
@@ -1027,7 +1043,7 @@
     document.body.appendChild(float);
 
     dragging = { id: id, row: row, float: float, grip: grip,
-                 left: r.left, grabY: clientY - r.top, lastY: clientY, raf: 0,
+                 left: r.left, grabY: grab, lastY: clientY, raf: 0,
                  // where it started, so an interrupted drag can put it back
                  homeZone: row.parentElement, homeNext: row.nextElementSibling };
     row.classList.add("placeholder");
@@ -1146,6 +1162,7 @@
     target.splice(Math.max(0, Math.min(index, target.length)), 0, moving);
 
     const writes = [];
+    const local = []; // what to apply here, so the list settles before the network does
     target.forEach((e, k) => {
       const patch = {};
       if (e.id === id) {
@@ -1153,15 +1170,26 @@
         if (fromSlot !== slot) patch.slot = slot;
       }
       if (e.seq !== k) patch.seq = k;
-      if (Object.keys(patch).length) writes.push(sb.from("expenses").update(patch).eq("id", e.id));
+      if (Object.keys(patch).length) {
+        writes.push(sb.from("expenses").update(patch).eq("id", e.id));
+        local.push([e, patch]);
+      }
     });
     if (fromDay !== day || fromSlot !== slot) {
       state.expenses.filter((e) => inBucket(e, fromDay, fromSlot)).sort(byOrder)
         .forEach((e, k) => {
-          if (e.seq !== k) writes.push(sb.from("expenses").update({ seq: k }).eq("id", e.id));
+          if (e.seq !== k) {
+            writes.push(sb.from("expenses").update({ seq: k }).eq("id", e.id));
+            local.push([e, { seq: k }]);
+          }
         });
     }
-    if (!writes.length) { renderTimeline(); return; }
+    if (!writes.length) { keepRowInPlace(id, renderTimeline); return; }
+
+    // Collapse the expanded grid right away. Waiting for the round trip leaves
+    // every empty slot on screen — a long stretch of dashed boxes on a phone.
+    local.forEach((p) => Object.assign(p[0], p[1]));
+    keepRowInPlace(id, renderTimeline);
 
     const bad = (await Promise.all(writes)).find((r) => r && r.error);
     if (bad) {
@@ -1175,7 +1203,8 @@
     if (fromDay !== day || fromSlot !== slot) {
       toast(`${dayLabel(day)}${slot ? " · " + slot : ""}(으)로 옮김`);
     }
-    await refetch();
+    // No refetch: the local copy already matches what was just written, and
+    // re-rendering identical content would only shift the page again.
   }
 
   // ═══════════════════ ACTIONS ═══════════════════

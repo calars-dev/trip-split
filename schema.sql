@@ -36,6 +36,7 @@ create table if not exists public.expenses (
   day_index       smallint,  -- 0 = spent before the trip, 1 = day 1, 2 = day 2 …
   slot            text,      -- 아침 | 점심 | 오후 | 저녁 | 밤
   seq             int,       -- order within one (day_index, slot) bucket
+  receipt_path    text,      -- storage key; "<path>.jpg" full, "<path>_t.jpg" thumb
   created_at      timestamptz not null default now()
 );
 

@@ -453,7 +453,7 @@
 
     <input id="note" class="text-input note-input" placeholder="내용 (선택) — 예: 저녁 삼겹살" maxlength="30" />
 
-    <button class="receipt-bar missing" id="receipt-bar" style="display:none">
+    <button class="receipt-bar missing" id="receipt-bar">
       <span class="rb-thumb" id="receipt-thumb">📷</span>
       <span class="rb-text" id="receipt-text">영수증 · 결제내역 <b>필수</b>
         <span class="rb-sub">찍거나 사진첩에서 고르기</span></span>
@@ -461,6 +461,7 @@
     </button>
     <div id="receipt-note"></div>
     <input type="file" id="receipt-file" accept="image/*" style="display:none" />
+    <input type="file" id="attach-file" accept="image/*" style="display:none" />
 
     <div class="who-bar" id="when-bar">
       <span class="who-text" id="when-text">—</span>
@@ -576,6 +577,11 @@
     <button class="m-btn" id="rate-save" style="margin-top:14px">저장</button>
     <button class="m-btn cancel" id="rate-cancel">취소</button>
   </div>
+</div>
+
+<div class="shotbox" id="shot-back">
+  <img id="shot-img" alt="영수증" />
+  <div class="sb-hint">바깥을 누르면 닫혀요</div>
 </div>
 
 <div class="modal-back" id="date-back">

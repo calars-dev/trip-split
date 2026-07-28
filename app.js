@@ -963,32 +963,42 @@
       else arming.lastY = e.clientY;
     };
     arming.onOff = () => disarm();
-    grip.addEventListener("pointermove", arming.onMove);
-    grip.addEventListener("pointerup", arming.onOff);
-    grip.addEventListener("pointercancel", arming.onOff);
+    // on document, not the grip: the finger slides off it, and after the drag
+    // starts the grip element is replaced anyway
+    document.addEventListener("pointermove", arming.onMove);
+    document.addEventListener("pointerup", arming.onOff);
+    document.addEventListener("pointercancel", arming.onOff);
+    // Register the scroll blocker NOW, while the touch is still standing still.
+    // A browser decides at gesture start whether JS may cancel the scroll; a
+    // listener added later (once the drag begins) arrives too late and the pan
+    // wins, which cancels the pointer and kills the drag on the first move.
+    document.addEventListener("touchmove", blockTouch, { passive: false });
     grip.classList.add("arming");
     arming.timer = setTimeout(() => {
       const a = arming;
-      disarm();
+      disarm(true); // hand the scroll blocker over to the drag
       if (navigator.vibrate) navigator.vibrate(12);
       startDrag(a.id, a.lastY, a.pointerId);
     }, HOLD_MS);
   }
 
-  function disarm() {
+  // `keepBlocker` is set when a drag is taking over and still needs it
+  function disarm(keepBlocker) {
     const a = arming;
     if (!a) return;
     arming = null;
     clearTimeout(a.timer);
     a.grip.classList.remove("arming");
-    a.grip.removeEventListener("pointermove", a.onMove);
-    a.grip.removeEventListener("pointerup", a.onOff);
-    a.grip.removeEventListener("pointercancel", a.onOff);
+    document.removeEventListener("pointermove", a.onMove);
+    document.removeEventListener("pointerup", a.onOff);
+    document.removeEventListener("pointercancel", a.onOff);
+    if (!keepBlocker) document.removeEventListener("touchmove", blockTouch, { passive: false });
   }
 
-  // Nothing else may scroll while a drag is on. touch-action can't do this —
-  // the grip has to stay pan-y so an ordinary swipe still scrolls.
-  function blockTouch(ev) { ev.preventDefault(); }
+  // Nothing may scroll once a drag is on. touch-action can't do this — the grip
+  // has to stay pan-y so an ordinary swipe still scrolls. While merely arming,
+  // this lets the touch through so the page still scrolls normally.
+  function blockTouch(ev) { if (dragging) ev.preventDefault(); }
 
   function startDrag(id, clientY, pointerId) {
     if (dragging) return;
@@ -1022,11 +1032,13 @@
     document.body.classList.add("dragging");
     followFinger();
 
+    // Listen on document, not the grip. Capturing a pointer onto an element
+    // that was created mid-gesture is unreliable on mobile, and without capture
+    // the events go to whatever is under the finger instead.
     try { grip.setPointerCapture(pointerId); } catch (err) {}
-    grip.addEventListener("pointermove", onDragMove);
-    grip.addEventListener("pointerup", endDrag);
-    grip.addEventListener("pointercancel", endDrag);
-    document.addEventListener("touchmove", blockTouch, { passive: false });
+    document.addEventListener("pointermove", onDragMove);
+    document.addEventListener("pointerup", endDrag);
+    document.addEventListener("pointercancel", endDrag);
     // last resort: never leave the list frozen if the gesture goes missing
     window.addEventListener("blur", endDrag);
     document.addEventListener("visibilitychange", endDrag);
@@ -1086,9 +1098,9 @@
     if (!d) return;
     dragging = null;
     cancelAnimationFrame(d.raf);
-    d.grip.removeEventListener("pointermove", onDragMove);
-    d.grip.removeEventListener("pointerup", endDrag);
-    d.grip.removeEventListener("pointercancel", endDrag);
+    document.removeEventListener("pointermove", onDragMove);
+    document.removeEventListener("pointerup", endDrag);
+    document.removeEventListener("pointercancel", endDrag);
     document.removeEventListener("touchmove", blockTouch, { passive: false });
     window.removeEventListener("blur", endDrag);
     document.removeEventListener("visibilitychange", endDrag);

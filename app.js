@@ -1027,21 +1027,25 @@
     document.body.appendChild(float);
 
     dragging = { id: id, row: row, float: float, grip: grip,
-                 left: r.left, grabY: clientY - r.top, lastY: clientY, raf: 0 };
+                 left: r.left, grabY: clientY - r.top, lastY: clientY, raf: 0,
+                 // where it started, so an interrupted drag can put it back
+                 homeZone: row.parentElement, homeNext: row.nextElementSibling };
     row.classList.add("placeholder");
     document.body.classList.add("dragging");
     followFinger();
 
-    // Listen on document, not the grip. Capturing a pointer onto an element
-    // that was created mid-gesture is unreliable on mobile, and without capture
-    // the events go to whatever is under the finger instead.
-    try { grip.setPointerCapture(pointerId); } catch (err) {}
+    // Deliberately NO setPointerCapture. The captured element would be the grip,
+    // which lives inside the row we re-parent on every move — and moving a
+    // capturing element releases the capture and fires pointercancel, so the
+    // drag died on the first finger movement. Listening on document needs no
+    // capture anyway.
     document.addEventListener("pointermove", onDragMove);
     document.addEventListener("pointerup", endDrag);
-    document.addEventListener("pointercancel", endDrag);
-    // last resort: never leave the list frozen if the gesture goes missing
-    window.addEventListener("blur", endDrag);
-    document.addEventListener("visibilitychange", endDrag);
+    // A cancel is not a drop: put the row back rather than filing it somewhere
+    // the user never chose.
+    document.addEventListener("pointercancel", cancelDrag);
+    window.addEventListener("blur", cancelDrag);
+    document.addEventListener("visibilitychange", cancelDrag);
     dragging.raf = requestAnimationFrame(dragTick);
   }
 
@@ -1093,26 +1097,40 @@
     else best.appendChild(dragging.row);
   }
 
-  async function endDrag(ev) {
+  // tear down the drag and hand back the row so callers can decide what it means
+  function stopDrag() {
     const d = dragging;
-    if (!d) return;
+    if (!d) return null;
     dragging = null;
     cancelAnimationFrame(d.raf);
     document.removeEventListener("pointermove", onDragMove);
     document.removeEventListener("pointerup", endDrag);
-    document.removeEventListener("pointercancel", endDrag);
+    document.removeEventListener("pointercancel", cancelDrag);
     document.removeEventListener("touchmove", blockTouch, { passive: false });
-    window.removeEventListener("blur", endDrag);
-    document.removeEventListener("visibilitychange", endDrag);
-    try { d.grip.releasePointerCapture(ev && ev.pointerId); } catch (err) {}
+    window.removeEventListener("blur", cancelDrag);
+    document.removeEventListener("visibilitychange", cancelDrag);
     d.float.remove();
     d.row.classList.remove("placeholder");
     document.body.classList.remove("dragging");
+    return d;
+  }
 
+  // the finger lifted — file the expense wherever the placeholder ended up
+  async function endDrag() {
+    const d = stopDrag();
+    if (!d) return;
     const zone = d.row.parentElement;
     if (!zone || !zone.classList.contains("tl-rows")) { renderTimeline(); return; }
     const index = [].slice.call(zone.children).indexOf(d.row);
     await commitDrag(d.id, Number(zone.dataset.day), zone.dataset.slot || null, index);
+  }
+
+  // the gesture was taken away (app switch, incoming call) — put it back
+  function cancelDrag() {
+    const d = stopDrag();
+    if (!d) return;
+    if (d.homeZone && d.homeZone.isConnected) d.homeZone.insertBefore(d.row, d.homeNext);
+    renderTimeline();
   }
 
   // Write the new arrangement: the target bucket is renumbered 0..n-1 with the

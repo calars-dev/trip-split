@@ -299,11 +299,11 @@
   .tl-row .exp-item { flex: 1; min-width: 0; }
   /* the two dot columns need real spacing, and the whole thing needs to be
      wide enough to hit with a thumb — keep it around 36px.
-     touch-action stays pan-y: this sits exactly where a thumb scrolls, so a
-     touch here must be able to scroll the page. A drag is armed by holding. */
+     touch-action: none, so iOS can never start a pan and cancel the drag.
+     Swiping here still scrolls: the script does that scrolling itself. */
   .tl-grip { flex: 0 0 auto; color: var(--faint); font-size: 15px; line-height: 1;
              letter-spacing: 2px; padding: 13px 7px 13px 14px;
-             touch-action: pan-y; cursor: grab;
+             touch-action: none; cursor: grab;
              /* a long press must not raise iOS's selection callout */
              -webkit-touch-callout: none; -webkit-user-select: none; user-select: none;
              transition: color .12s, transform .12s; }

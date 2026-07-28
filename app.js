@@ -956,11 +956,23 @@
       startDrag(id, ev.clientY, ev.pointerId);
       return;
     }
-    arming = { id: id, grip: grip, startY: ev.clientY, lastY: ev.clientY, pointerId: ev.pointerId };
+    arming = { id: id, grip: grip, startY: ev.clientY, lastY: ev.clientY,
+               panY: ev.clientY, mode: "hold", pointerId: ev.pointerId };
     arming.onMove = (e) => {
-      if (!arming) return;
-      if (Math.abs(e.clientY - arming.startY) > SLIP_PX) disarm();
-      else arming.lastY = e.clientY;
+      const a = arming;
+      if (!a) return;
+      if (a.mode === "hold") {
+        if (Math.abs(e.clientY - a.startY) <= SLIP_PX) { a.lastY = e.clientY; return; }
+        // Travelled: this is a swipe, not a grab. The grip is touch-action:none
+        // so the browser will not scroll for us — do it by hand, matching the
+        // finger, so the right edge of the list doesn't become a dead strip.
+        a.mode = "pan";
+        clearTimeout(a.timer);
+        a.grip.classList.remove("arming");
+        a.panY = a.startY; // count the travel so far, or the swipe starts late
+      }
+      window.scrollBy(0, a.panY - e.clientY);
+      a.panY = e.clientY;
     };
     arming.onOff = () => disarm();
     // on document, not the grip: the finger slides off it, and after the drag
@@ -968,22 +980,16 @@
     document.addEventListener("pointermove", arming.onMove);
     document.addEventListener("pointerup", arming.onOff);
     document.addEventListener("pointercancel", arming.onOff);
-    // Register the scroll blocker NOW, while the touch is still standing still.
-    // A browser decides at gesture start whether JS may cancel the scroll; a
-    // listener added later (once the drag begins) arrives too late and the pan
-    // wins, which cancels the pointer and kills the drag on the first move.
-    document.addEventListener("touchmove", blockTouch, { passive: false });
     grip.classList.add("arming");
     arming.timer = setTimeout(() => {
       const a = arming;
-      disarm(true); // hand the scroll blocker over to the drag
+      disarm();
       if (navigator.vibrate) navigator.vibrate(12);
       startDrag(a.id, a.lastY, a.pointerId);
     }, HOLD_MS);
   }
 
-  // `keepBlocker` is set when a drag is taking over and still needs it
-  function disarm(keepBlocker) {
+  function disarm() {
     const a = arming;
     if (!a) return;
     arming = null;
@@ -992,13 +998,7 @@
     document.removeEventListener("pointermove", a.onMove);
     document.removeEventListener("pointerup", a.onOff);
     document.removeEventListener("pointercancel", a.onOff);
-    if (!keepBlocker) document.removeEventListener("touchmove", blockTouch, { passive: false });
   }
-
-  // Nothing may scroll once a drag is on. touch-action can't do this — the grip
-  // has to stay pan-y so an ordinary swipe still scrolls. While merely arming,
-  // this lets the touch through so the page still scrolls normally.
-  function blockTouch(ev) { if (dragging) ev.preventDefault(); }
 
   function startDrag(id, clientY, pointerId) {
     if (dragging) return;
@@ -1106,7 +1106,6 @@
     document.removeEventListener("pointermove", onDragMove);
     document.removeEventListener("pointerup", endDrag);
     document.removeEventListener("pointercancel", cancelDrag);
-    document.removeEventListener("touchmove", blockTouch, { passive: false });
     window.removeEventListener("blur", cancelDrag);
     document.removeEventListener("visibilitychange", cancelDrag);
     d.float.remove();

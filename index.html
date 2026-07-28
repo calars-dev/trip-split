@@ -290,9 +290,38 @@
             background: var(--bg); display: flex; align-items: center; justify-content: center; font-size: 13px; }
   .tl-slot-name { font-size: 12.5px; font-weight: 700; color: var(--muted); letter-spacing: .01em; }
   .tl-slot .exp-item { padding: 9px 4px; }
-  .tl-slot .exp-item + .exp-item { border-top: 1px solid var(--line); }
   .tl-slot .exp-emoji { width: 34px; height: 34px; border-radius: 9px; font-size: 17px; }
   .tl-share { color: var(--faint); font-size: 11.5px; font-weight: 600; }
+
+  /* ── drag to re-file ── */
+  .tl-row { display: flex; align-items: center; border-radius: 10px; }
+  .tl-row + .tl-row { border-top: 1px solid var(--line); }
+  .tl-row .exp-item { flex: 1; min-width: 0; }
+  /* the two dot columns need real spacing, and the whole thing needs to be
+     wide enough to hit with a thumb — keep it around 36px */
+  .tl-grip { flex: 0 0 auto; color: var(--faint); font-size: 15px; line-height: 1;
+             letter-spacing: 2px; padding: 13px 7px 13px 14px;
+             touch-action: none; cursor: grab; }
+  .tl-grip:active { cursor: grabbing; color: var(--accent); }
+  .tl-rows { min-height: 6px; }
+  /* the row left behind while its clone follows the finger */
+  .tl-row.placeholder { outline: 1.5px dashed var(--accent); outline-offset: -3px;
+                        background: color-mix(in srgb, var(--accent) 10%, transparent); }
+  .tl-row.placeholder .exp-item, .tl-row.placeholder .tl-grip { visibility: hidden; }
+  .tl-float { position: fixed; left: 0; top: 0; z-index: 60; pointer-events: none;
+              background: var(--surface-2); border: 1px solid var(--accent); border-radius: 12px;
+              padding: 2px 10px; box-shadow: 0 14px 30px rgba(0,0,0,.55); opacity: .97; }
+  .tl-float .exp-item { padding: 9px 0; }
+  .tl-float .exp-emoji { width: 34px; height: 34px; border-radius: 9px; font-size: 17px; }
+  /* slots and days that only exist as drop targets while dragging */
+  body.dragging { user-select: none; -webkit-user-select: none; }
+  .tl-slot.vacant .tl-slot-name { color: var(--faint); font-weight: 600; }
+  .tl-slot.vacant .tl-dot { opacity: .45; }
+  .tl-day.vacant .tl-day-num, .tl-day.vacant .tl-day-total { color: var(--faint); }
+  /* every bin is visible and the same size to aim at while a drag is on —
+     a slot the row just left would otherwise collapse to a few pixels */
+  body.dragging .tl-rows { min-height: 34px; outline: 1px dashed var(--line);
+                           outline-offset: -3px; border-radius: 10px; }
 
   /* ── move up/down inside the expense modal ── */
   .m-move { display: flex; gap: 9px; }

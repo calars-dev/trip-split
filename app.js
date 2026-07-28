@@ -809,8 +809,63 @@
     });
   }
 
-  function renderTimeline() {
+  // Empty slots and empty days are hidden normally — blank rows only make the
+  // page longer. While dragging they have to exist, or there is nowhere to drop.
+  const SLOT_KEYS = SLOTS.map((s) => s.key);
+  const MAX_VACANT_DAYS = 14;
+  function addDropTargets(days) {
+    const have = {};
+    days.forEach((d) => { have[d.dayIndex] = d; });
+    const last = lastDayIndex();
+    if (last <= MAX_VACANT_DAYS) {
+      for (let i = 0; i <= last; i++) {
+        if (!have[i]) { have[i] = { dayIndex: i, slots: [], total: 0, vacant: true }; days.push(have[i]); }
+      }
+    }
+    if (!have[PREP_DAY]) {
+      have[PREP_DAY] = { dayIndex: PREP_DAY, slots: [], total: 0, vacant: true };
+      days.push(have[PREP_DAY]);
+    }
+    days.forEach((d) => {
+      if (d.dayIndex === null) return;
+      if (d.dayIndex === PREP_DAY) {
+        if (!d.slots.length) d.slots = [{ slot: null, items: [] }];
+        return;
+      }
+      const bySlot = {};
+      d.slots.forEach((g) => { bySlot[g.slot] = g; });
+      d.slots = SLOT_KEYS.map((k) => bySlot[k] || { slot: k, items: [] });
+    });
+    days.sort((a, b) => dayRank(a.dayIndex) - dayRank(b.dayIndex));
+  }
+
+  // one timeline row: the expense itself plus the grip that drags it
+  function timelineRow(e, share) {
+    const row = document.createElement("div");
+    row.className = "tl-row";
+    row.dataset.id = e.id;
+    row.appendChild(expenseItem(e, share));
+    const grip = document.createElement("button");
+    grip.className = "tl-grip";
+    grip.textContent = "⋮⋮";
+    grip.title = "끌어서 옮기기";
+    grip.onclick = (ev) => ev.preventDefault();
+    grip.addEventListener("pointerdown", (ev) => beginDrag(ev, e.id));
+    row.appendChild(grip);
+    return row;
+  }
+
+  function dropZone(dayIndex, slot) {
+    const z = document.createElement("div");
+    z.className = "tl-rows";
+    z.dataset.day = String(dayIndex);
+    z.dataset.slot = slot || "";
+    return z;
+  }
+
+  function renderTimeline(expand) {
     if (!state.room) return;
+    if (dragging && !expand) return; // never rebuild the list out from under a drag
     renderFilters();
     $("tl-notice").innerHTML = timelineColsMissing
       ? `<div class="tl-notice">⚠️ 일차·시간대를 저장할 칸이 아직 없어요 —
@@ -827,12 +882,13 @@
     }
 
     const days = groupByDay(items);
+    if (expand) addDropTargets(days);
     const peak = Math.max.apply(null, days.map((d) => d.total).concat([1]));
     const shareMode = state.filter.memberId && state.filter.mode === "share";
     box.innerHTML = "";
     days.forEach((day) => {
       const wrap = document.createElement("div");
-      wrap.className = "tl-day";
+      wrap.className = "tl-day" + (day.vacant ? " vacant" : "");
       const name = day.dayIndex === null ? "❓ 미지정"
         : (day.dayIndex === PREP_DAY ? "🎒 여행 전 준비" : day.dayIndex + "일차");
       const date = (day.dayIndex === null || day.dayIndex === PREP_DAY) ? "" : dayDateLabel(day.dayIndex);
@@ -850,22 +906,23 @@
       bar.innerHTML = `<i style="width:${Math.max(2, Math.round(day.total / peak * 100))}%"></i>`;
       wrap.appendChild(bar);
 
-      const row = (e) => expenseItem(e, shareMode ? shareOf(e, state.filter.memberId) : undefined);
+      const row = (e) => timelineRow(e, shareMode ? shareOf(e, state.filter.memberId) : undefined);
       if (day.dayIndex === PREP_DAY) {
         // prep spending has no time of day, so no spine — just the list
-        const list = document.createElement("div");
-        list.className = "exp-list";
-        day.slots.forEach((g) => g.items.forEach((e) => list.appendChild(row(e))));
-        wrap.appendChild(list);
+        const zone = dropZone(PREP_DAY, null);
+        day.slots.forEach((g) => g.items.forEach((e) => zone.appendChild(row(e))));
+        wrap.appendChild(zone);
       } else {
         const body = document.createElement("div");
         body.className = "tl-body";
         day.slots.forEach((g) => {
           const sl = document.createElement("div");
-          sl.className = "tl-slot";
+          sl.className = "tl-slot" + (g.items.length ? "" : " vacant");
           sl.innerHTML = `<span class="tl-dot">${SLOT_EMOJI[g.slot] || "❓"}</span>
             <div class="tl-slot-name">${g.slot || "미지정"}</div>`;
-          g.items.forEach((e) => sl.appendChild(row(e)));
+          const zone = dropZone(day.dayIndex, g.slot);
+          g.items.forEach((e) => zone.appendChild(row(e)));
+          sl.appendChild(zone);
           body.appendChild(sl);
         });
         wrap.appendChild(body);
@@ -876,6 +933,166 @@
 
   function escapeHtml(s) {
     return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+
+  // ═══════════════════ DRAG ═══════════════════
+  // Grab the ⋮⋮ grip and drop the expense into any slot on any day. The row
+  // itself stays in the list as the placeholder while a clone follows the
+  // finger, so the surrounding rows reflow exactly where it will land.
+  let dragging = null;
+
+  function beginDrag(ev, id) {
+    if (dragging || ev.button > 0) return;
+    const first = document.querySelector('.tl-row[data-id="' + id + '"]');
+    if (!first) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+
+    // Open up every slot and day as a drop target, then take back the scroll
+    // the new rows just pushed down, so the row stays under the finger.
+    const anchor = first.getBoundingClientRect().top;
+    renderTimeline(true);
+    const row = document.querySelector('.tl-row[data-id="' + id + '"]');
+    if (!row) return;
+    window.scrollBy(0, row.getBoundingClientRect().top - anchor);
+
+    // The re-render replaced every row, so the grip that was pressed is now
+    // detached and will never see another pointer event. Bind to the new one.
+    const grip = row.querySelector(".tl-grip");
+    if (!grip) return;
+
+    const r = row.getBoundingClientRect();
+    const e = state.expenses.find((x) => x.id === id);
+    const float = document.createElement("div");
+    float.className = "tl-float";
+    float.style.width = r.width + "px";
+    float.appendChild(expenseItem(e));
+    document.body.appendChild(float);
+
+    dragging = { id: id, row: row, float: float, grip: grip,
+                 left: r.left, grabY: ev.clientY - r.top, lastY: ev.clientY, raf: 0 };
+    row.classList.add("placeholder");
+    document.body.classList.add("dragging");
+    followFinger();
+
+    try { grip.setPointerCapture(ev.pointerId); } catch (err) {}
+    grip.addEventListener("pointermove", onDragMove);
+    grip.addEventListener("pointerup", endDrag);
+    grip.addEventListener("pointercancel", endDrag);
+    dragging.raf = requestAnimationFrame(dragTick);
+  }
+
+  function followFinger() {
+    const d = dragging;
+    d.float.style.transform = "translate(" + d.left + "px," + (d.lastY - d.grabY) + "px)";
+  }
+
+  function onDragMove(ev) {
+    if (!dragging) return;
+    ev.preventDefault();
+    dragging.lastY = ev.clientY;
+    followFinger();
+    placeRow(ev.clientY); // on the event itself, not the frame loop — see dragTick
+  }
+
+  // Only job is the edge scroll: hold the finger near the top or bottom and the
+  // page keeps moving even though no pointermove events are arriving. Placement
+  // is driven by onDragMove instead, so a throttled or paused rAF (background
+  // tab, reduced motion) can never leave the placeholder stuck.
+  function dragTick() {
+    if (!dragging) return;
+    const pad = 90, h = window.innerHeight, y = dragging.lastY;
+    let by = 0;
+    if (y < pad) by = -Math.ceil((pad - y) / 8);
+    else if (y > h - pad) by = Math.ceil((y - (h - pad)) / 8);
+    if (by) { window.scrollBy(0, by); placeRow(y); followFinger(); }
+    dragging.raf = requestAnimationFrame(dragTick);
+  }
+
+  // Move the placeholder into whichever drop zone the finger is over. Zones can
+  // be a few pixels tall when empty, so fall back to the nearest one.
+  function placeRow(y) {
+    const zones = [].slice.call(document.querySelectorAll("#timeline .tl-rows"));
+    let best = null, bestGap = Infinity;
+    zones.forEach((z) => {
+      const r = z.getBoundingClientRect();
+      const gap = y < r.top ? r.top - y : (y > r.bottom ? y - r.bottom : 0);
+      if (gap < bestGap) { bestGap = gap; best = z; }
+    });
+    if (!best) return;
+    const rows = [].slice.call(best.children).filter((n) => n !== dragging.row);
+    let before = null;
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i].getBoundingClientRect();
+      if (y < r.top + r.height / 2) { before = rows[i]; break; }
+    }
+    if (before) best.insertBefore(dragging.row, before);
+    else best.appendChild(dragging.row);
+  }
+
+  async function endDrag(ev) {
+    const d = dragging;
+    if (!d) return;
+    dragging = null;
+    cancelAnimationFrame(d.raf);
+    d.grip.removeEventListener("pointermove", onDragMove);
+    d.grip.removeEventListener("pointerup", endDrag);
+    d.grip.removeEventListener("pointercancel", endDrag);
+    try { d.grip.releasePointerCapture(ev.pointerId); } catch (err) {}
+    d.float.remove();
+    d.row.classList.remove("placeholder");
+    document.body.classList.remove("dragging");
+
+    const zone = d.row.parentElement;
+    if (!zone || !zone.classList.contains("tl-rows")) { renderTimeline(); return; }
+    const index = [].slice.call(zone.children).indexOf(d.row);
+    await commitDrag(d.id, Number(zone.dataset.day), zone.dataset.slot || null, index);
+  }
+
+  // Write the new arrangement: the target bucket is renumbered 0..n-1 with the
+  // expense inserted, and the bucket it left closes its gap.
+  async function commitDrag(id, day, slot, index) {
+    const moving = state.expenses.find((e) => e.id === id);
+    if (!moving) { renderTimeline(); return; }
+    const fromDay = dayOf(moving), fromSlot = slotKeyOf(moving);
+    const byOrder = (a, b) =>
+      (a.seq || 0) - (b.seq || 0) || (new Date(a.created_at) - new Date(b.created_at));
+    const inBucket = (e, dd, ss) => e.id !== id && dayOf(e) === dd && slotKeyOf(e) === ss;
+
+    const target = state.expenses.filter((e) => inBucket(e, day, slot)).sort(byOrder);
+    target.splice(Math.max(0, Math.min(index, target.length)), 0, moving);
+
+    const writes = [];
+    target.forEach((e, k) => {
+      const patch = {};
+      if (e.id === id) {
+        if (fromDay !== day) patch.day_index = day;
+        if (fromSlot !== slot) patch.slot = slot;
+      }
+      if (e.seq !== k) patch.seq = k;
+      if (Object.keys(patch).length) writes.push(sb.from("expenses").update(patch).eq("id", e.id));
+    });
+    if (fromDay !== day || fromSlot !== slot) {
+      state.expenses.filter((e) => inBucket(e, fromDay, fromSlot)).sort(byOrder)
+        .forEach((e, k) => {
+          if (e.seq !== k) writes.push(sb.from("expenses").update({ seq: k }).eq("id", e.id));
+        });
+    }
+    if (!writes.length) { renderTimeline(); return; }
+
+    const bad = (await Promise.all(writes)).find((r) => r && r.error);
+    if (bad) {
+      if (isMissingTimelineCol(bad.error)) {
+        timelineColsMissing = true;
+        toast("migration-timeline.sql 먼저 실행해 주세요", true);
+      } else toast("이동 실패: " + bad.error.message, true);
+      await refetch();
+      return;
+    }
+    if (fromDay !== day || fromSlot !== slot) {
+      toast(`${dayLabel(day)}${slot ? " · " + slot : ""}(으)로 옮김`);
+    }
+    await refetch();
   }
 
   // ═══════════════════ ACTIONS ═══════════════════

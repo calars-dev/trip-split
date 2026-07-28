@@ -940,13 +940,60 @@
   // itself stays in the list as the placeholder while a clone follows the
   // finger, so the surrounding rows reflow exactly where it will land.
   let dragging = null;
+  let arming = null;
+  const HOLD_MS = 320;   // how long a finger must sit still before it drags
+  const SLIP_PX = 8;     // travel that means "this was a scroll, not a grab"
 
+  // A thumb scrolling the list lands right on the grip. Touch therefore has to
+  // hold still to start a drag — any travel means scroll, and the page keeps
+  // scrolling normally (the grip is pan-y). A mouse has no such ambiguity.
   function beginDrag(ev, id) {
-    if (dragging || ev.button > 0) return;
+    if (dragging || arming) return;
+    if (ev.button > 0) return;
+    const grip = ev.currentTarget;
+    if (ev.pointerType === "mouse") {
+      ev.preventDefault();
+      startDrag(id, ev.clientY, ev.pointerId);
+      return;
+    }
+    arming = { id: id, grip: grip, startY: ev.clientY, lastY: ev.clientY, pointerId: ev.pointerId };
+    arming.onMove = (e) => {
+      if (!arming) return;
+      if (Math.abs(e.clientY - arming.startY) > SLIP_PX) disarm();
+      else arming.lastY = e.clientY;
+    };
+    arming.onOff = () => disarm();
+    grip.addEventListener("pointermove", arming.onMove);
+    grip.addEventListener("pointerup", arming.onOff);
+    grip.addEventListener("pointercancel", arming.onOff);
+    grip.classList.add("arming");
+    arming.timer = setTimeout(() => {
+      const a = arming;
+      disarm();
+      if (navigator.vibrate) navigator.vibrate(12);
+      startDrag(a.id, a.lastY, a.pointerId);
+    }, HOLD_MS);
+  }
+
+  function disarm() {
+    const a = arming;
+    if (!a) return;
+    arming = null;
+    clearTimeout(a.timer);
+    a.grip.classList.remove("arming");
+    a.grip.removeEventListener("pointermove", a.onMove);
+    a.grip.removeEventListener("pointerup", a.onOff);
+    a.grip.removeEventListener("pointercancel", a.onOff);
+  }
+
+  // Nothing else may scroll while a drag is on. touch-action can't do this —
+  // the grip has to stay pan-y so an ordinary swipe still scrolls.
+  function blockTouch(ev) { ev.preventDefault(); }
+
+  function startDrag(id, clientY, pointerId) {
+    if (dragging) return;
     const first = document.querySelector('.tl-row[data-id="' + id + '"]');
     if (!first) return;
-    ev.preventDefault();
-    ev.stopPropagation();
 
     // Open up every slot and day as a drop target, then take back the scroll
     // the new rows just pushed down, so the row stays under the finger.
@@ -970,15 +1017,19 @@
     document.body.appendChild(float);
 
     dragging = { id: id, row: row, float: float, grip: grip,
-                 left: r.left, grabY: ev.clientY - r.top, lastY: ev.clientY, raf: 0 };
+                 left: r.left, grabY: clientY - r.top, lastY: clientY, raf: 0 };
     row.classList.add("placeholder");
     document.body.classList.add("dragging");
     followFinger();
 
-    try { grip.setPointerCapture(ev.pointerId); } catch (err) {}
+    try { grip.setPointerCapture(pointerId); } catch (err) {}
     grip.addEventListener("pointermove", onDragMove);
     grip.addEventListener("pointerup", endDrag);
     grip.addEventListener("pointercancel", endDrag);
+    document.addEventListener("touchmove", blockTouch, { passive: false });
+    // last resort: never leave the list frozen if the gesture goes missing
+    window.addEventListener("blur", endDrag);
+    document.addEventListener("visibilitychange", endDrag);
     dragging.raf = requestAnimationFrame(dragTick);
   }
 
@@ -1038,7 +1089,10 @@
     d.grip.removeEventListener("pointermove", onDragMove);
     d.grip.removeEventListener("pointerup", endDrag);
     d.grip.removeEventListener("pointercancel", endDrag);
-    try { d.grip.releasePointerCapture(ev.pointerId); } catch (err) {}
+    document.removeEventListener("touchmove", blockTouch, { passive: false });
+    window.removeEventListener("blur", endDrag);
+    document.removeEventListener("visibilitychange", endDrag);
+    try { d.grip.releasePointerCapture(ev && ev.pointerId); } catch (err) {}
     d.float.remove();
     d.row.classList.remove("placeholder");
     document.body.classList.remove("dragging");

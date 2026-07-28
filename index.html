@@ -298,11 +298,15 @@
   .tl-row + .tl-row { border-top: 1px solid var(--line); }
   .tl-row .exp-item { flex: 1; min-width: 0; }
   /* the two dot columns need real spacing, and the whole thing needs to be
-     wide enough to hit with a thumb — keep it around 36px */
+     wide enough to hit with a thumb — keep it around 36px.
+     touch-action stays pan-y: this sits exactly where a thumb scrolls, so a
+     touch here must be able to scroll the page. A drag is armed by holding. */
   .tl-grip { flex: 0 0 auto; color: var(--faint); font-size: 15px; line-height: 1;
              letter-spacing: 2px; padding: 13px 7px 13px 14px;
-             touch-action: none; cursor: grab; }
-  .tl-grip:active { cursor: grabbing; color: var(--accent); }
+             touch-action: pan-y; cursor: grab;
+             transition: color .12s, transform .12s; }
+  .tl-grip:active { cursor: grabbing; }
+  .tl-grip.arming { color: var(--accent); transform: scale(1.25); }
   .tl-rows { min-height: 6px; }
   /* the row left behind while its clone follows the finger */
   .tl-row.placeholder { outline: 1.5px dashed var(--accent); outline-offset: -3px;

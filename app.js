@@ -2181,9 +2181,19 @@
   // trip and still free. Leaving that to a row policy would mean the policy has
   // to let strangers see unclaimed rows — and a policy that shows rows also
   // lets them be listed.
+  const missingFn = (err) => !!err && /does not exist|schema cache|PGRST202/i.test(err.message || "");
+
   async function claimMember(memberId) {
-    const { data, error } = await sb.rpc("claim_seat",
+    let { data, error } = await sb.rpc("claim_seat",
       { p_room: state.room.id, p_member: memberId });
+    if (missingFn(error)) {
+      // The locking migration hasn't run yet, so the function isn't there —
+      // take the seat directly, which the current policies still allow.
+      const r = await sb.from("members").update({ user_id: me.id })
+        .eq("id", memberId).eq("room_id", state.room.id).is("user_id", null).select();
+      error = r.error;
+      data = !!(r.data && r.data.length);
+    }
     if (error) { toast("실패: " + error.message, true); return; }
     if (data !== true) { toast("이미 다른 사람이 가져갔어요", true); return; }
     closeClaim();
@@ -2195,7 +2205,13 @@
 
   async function claimAsNew() {
     const name = (me && me.name) || "";
-    const { data, error } = await sb.rpc("join_room", { p_room: state.room.id, p_name: name });
+    let { data, error } = await sb.rpc("join_room", { p_room: state.room.id, p_name: name });
+    if (missingFn(error)) {
+      const r = await sb.from("members")
+        .insert({ room_id: state.room.id, name: name, user_id: me.id }).select().single();
+      error = r.error;
+      data = r.data && r.data.id;
+    }
     if (error || !data) { toast("참여 실패" + (error ? ": " + error.message : ""), true); return; }
     closeClaim();
     rememberMe(state.room.id, data);

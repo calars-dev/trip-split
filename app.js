@@ -105,9 +105,17 @@
   // shared link. Never on top of the input screen, which has a save button
   // right where this sits.
   const INSTALL_KEY = "tripsplit_install_dismissed";
-  let installPrompt = null; // Chrome hands us one; Safari never does
+  let installPrompt = null; // Chrome hands us one; Safari never will
+  const UA = navigator.userAgent;
+  const isIOS = /iphone|ipad|ipod/i.test(UA);
+  // Links get shared over KakaoTalk, and its in-app browser has no "add to
+  // home screen" at all. That, not the instructions, is where most people
+  // actually get stuck.
+  const inKakao = /KAKAOTALK/i.test(UA);
+  const inAppBrowser = inKakao || /Instagram|FBAN|FBAV|NAVER\(inapp|Line\//i.test(UA);
   const isStandalone = () =>
-    window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
+    (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) ||
+    window.navigator.standalone === true; // iOS reports it here instead
 
   function renderInstallHint(screenId) {
     const el = $("install-hint");
@@ -116,17 +124,68 @@
       el.classList.remove("show");
       return;
     }
-    const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
-    $("install-go").style.display = installPrompt ? "block" : "none";
-    $("install-how").textContent = installPrompt
-      ? "앱처럼 전체화면으로 열려요"
-      : (ios ? "공유 버튼 → '홈 화면에 추가'" : "브라우저 메뉴 → '홈 화면에 추가'");
+    const oneTap = !!installPrompt;
+    $("install-go").style.display = "block";
+    $("install-go").textContent = oneTap ? "추가" : "방법";
+    $("install-how").textContent = inAppBrowser
+      ? "브라우저로 열어야 추가할 수 있어요"
+      : (oneTap ? "앱처럼 전체화면으로 열려요"
+                : (isIOS ? "공유 버튼 → '홈 화면에 추가'" : "브라우저 메뉴 → '홈 화면에 추가'"));
     el.classList.add("show");
   }
   function dismissInstallHint() {
     localStorage.setItem(INSTALL_KEY, "1");
     $("install-hint").classList.remove("show");
   }
+
+  // Apple never implemented beforeinstallprompt, so on iOS the best available
+  // "one tap" is a clear set of steps pointing at the real share button.
+  const SHARE_ICON = `<svg class="ico" viewBox="0 0 24 24" width="19" height="19" fill="none"
+      stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 15V3"/><path d="M8 7l4-4 4 4"/>
+      <path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/></svg>`;
+  const step = (n, html) =>
+    `<div class="guide-step"><span class="guide-num">${n}</span><span class="guide-body">${html}</span></div>`;
+
+  function openInstallGuide() {
+    const steps = $("guide-steps"), action = $("guide-action"), arrow = $("guide-arrow");
+    arrow.innerHTML = "";
+    action.style.display = "none";
+    action.onclick = null;
+
+    if (inAppBrowser) {
+      $("guide-title").textContent = "브라우저로 먼저 열어주세요";
+      steps.innerHTML =
+        step(1, `지금은 <b>${inKakao ? "카톡" : "앱"} 안의 브라우저</b>예요.
+                 <small>여기에는 '홈 화면에 추가'가 없어요.</small>`) +
+        step(2, `${isIOS ? "사파리" : "크롬"}로 열면 추가할 수 있어요.
+                 <small>${inKakao ? "아래 버튼을 누르거나, 오른쪽 아래 메뉴에서 '다른 브라우저로 열기'"
+                                  : "메뉴에서 '다른 브라우저로 열기'"}를 골라주세요.</small>`);
+      if (inKakao) {
+        action.style.display = "block";
+        action.textContent = "🌐 브라우저로 열기";
+        action.onclick = () => {
+          location.href = "kakaotalk://web/openExternal?url=" + encodeURIComponent(location.href);
+        };
+      }
+    } else if (isIOS) {
+      $("guide-title").textContent = "홈 화면에 추가하기";
+      steps.innerHTML =
+        step(1, `아래쪽 공유 버튼 ${SHARE_ICON} 을 눌러요`) +
+        step(2, `목록을 내려서 <b>'홈 화면에 추가'</b>를 골라요`) +
+        step(3, `오른쪽 위 <b>'추가'</b>를 눌러요
+                 <small>홈 화면에 아이콘이 생기고, 주소창 없이 앱처럼 열려요.</small>`);
+      arrow.innerHTML = `<div class="guide-arrow">↓</div>`; // 공유 버튼은 화면 아래에 있다
+    } else {
+      $("guide-title").textContent = "홈 화면에 추가하기";
+      steps.innerHTML =
+        step(1, `브라우저 메뉴(⋮)를 눌러요`) +
+        step(2, `<b>'홈 화면에 추가'</b> 또는 <b>'앱 설치'</b>를 골라요
+                 <small>홈 화면에 아이콘이 생기고, 주소창 없이 앱처럼 열려요.</small>`);
+    }
+    $("guide-back").classList.add("show");
+  }
+  function closeInstallGuide() { $("guide-back").classList.remove("show"); }
 
   // ── toast ──
   let toastT;
@@ -1821,12 +1880,16 @@
     window.addEventListener("appinstalled", dismissInstallHint);
     $("install-x").onclick = dismissInstallHint;
     $("install-go").onclick = async () => {
-      if (!installPrompt) return;
+      // Chrome: one tap straight into the OS install dialog.
+      // Everywhere else: the closest thing available, which is instructions.
+      if (!installPrompt) { openInstallGuide(); return; }
       installPrompt.prompt();
       await installPrompt.userChoice;
       installPrompt = null;
       dismissInstallHint();
     };
+    $("guide-close").onclick = closeInstallGuide;
+    $("guide-back").onclick = (e) => { if (e.target === $("guide-back")) closeInstallGuide(); };
 
     // home (my trips)
     $("home-new").onclick = () => {

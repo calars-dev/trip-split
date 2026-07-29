@@ -292,6 +292,71 @@
     return out;
   }
 
+  // ═══════════════════ ACCOUNTS ═══════════════════
+  // There is no email here. A handle is turned into one behind the scenes so
+  // Supabase can do the hashing, sessions and tokens — none of that is worth
+  // hand-rolling. The user only ever types a name and six digits.
+  const MAIL_DOMAIN = "@tripsplit.app";
+  const handleMail = (h) => h.trim().toLowerCase() + MAIL_DOMAIN;
+  const HANDLE_RE = /^[가-힣a-zA-Z0-9]{2,8}$/;
+
+  let me = null;      // { id, handle, name }
+  let authMode = "in";
+  // The accounts migration may not have run yet. Until it has, the app behaves
+  // exactly as it did before — no login screen, no personal list.
+  let accountsReady = false;
+  async function checkAccounts() {
+    try {
+      const { error } = await sb.from("profiles").select("id").limit(1);
+      accountsReady = !error;
+    } catch (err) { accountsReady = false; }
+  }
+
+  async function loadMe() {
+    const { data } = await sb.auth.getUser();
+    if (!data || !data.user) { me = null; return null; }
+    const p = await sb.from("profiles").select("id,handle,name").eq("id", data.user.id).maybeSingle();
+    me = p.data || { id: data.user.id, handle: "?", name: "?" };
+    return me;
+  }
+
+  async function handleTaken(handle) {
+    const { data } = await sb.from("profiles").select("id").ilike("handle", handle.trim()).limit(1);
+    return !!(data && data.length);
+  }
+
+  // Suggest 민수2, 민수3 … so a common name isn't a dead end.
+  async function freeHandle(base) {
+    if (!(await handleTaken(base))) return base;
+    for (let n = 2; n <= 20 && base.length < 8; n++) {
+      const t = base + n;
+      if (!(await handleTaken(t))) return t;
+    }
+    return null;
+  }
+
+  async function doSignUp(handle, pw, q, a) {
+    const { data, error } = await sb.auth.signUp({ email: handleMail(handle), password: pw });
+    if (error) throw new Error(/already/i.test(error.message) ? "이미 쓰이는 이름이에요" : error.message);
+    if (!data.session) throw new Error("가입은 됐는데 로그인이 안 됐어요. 다시 로그인해 주세요.");
+    const uid = data.user.id;
+    const row = { id: uid, handle: handle.trim(), name: handle.trim() };
+    if (q && a) {
+      row.hint_q = q.trim();
+      row.hint_hash = await sha256Hex(a.trim().toLowerCase() + ":" + uid);
+    }
+    const { error: pErr } = await sb.from("profiles").insert(row);
+    if (pErr) throw new Error("프로필 저장 실패: " + pErr.message);
+    await loadMe();
+  }
+
+  async function doSignIn(handle, pw) {
+    const { error } = await sb.auth.signInWithPassword({ email: handleMail(handle), password: pw });
+    if (error) throw new Error(/Invalid login/i.test(error.message)
+      ? "이름이나 비밀번호가 맞지 않아요" : error.message);
+    await loadMe();
+  }
+
   // ═══════════════════ DATA ═══════════════════
   // Columns are listed rather than `select *`: once the migration lands, anon
   // loses blanket select on rooms so that pw_hash can never be read, and a
@@ -1857,6 +1922,7 @@
     // The key goes in at creation time and is remembered here, so the creator
     // never has to type it again on this device.
     const row = { id, name, default_currency: cur, start_date: start };
+    if (accountsReady && me) row.created_by = me.id;
     let key = null;
     if (pw) {
       try {
@@ -1881,7 +1947,9 @@
     }
     if (rErr) { btn.disabled = false; toast("방 생성 실패: " + rErr.message, true); return; }
     useKey(key); // members/expenses below need the key straight away
-    const { data: mem, error: mErr } = await sb.from("members").insert({ room_id: id, name: meName }).select().single();
+    const memRow = { room_id: id, name: meName };
+    if (accountsReady && me) memRow.user_id = me.id;
+    const { data: mem, error: mErr } = await sb.from("members").insert(memRow).select().single();
     if (mErr) { btn.disabled = false; toast("멤버 생성 실패", true); return; }
     rememberMe(id, mem.id);
     markOwner(id); // this device created the trip → can delete it
@@ -1912,8 +1980,9 @@
   async function addIdentity() {
     const name = $("ident-new").value.trim();
     if (!name) { toast("이름을 입력하세요", true); return; }
-    const { data: mem, error } = await sb.from("members")
-      .insert({ room_id: state.room.id, name }).select().single();
+    const row = { room_id: state.room.id, name };
+    if (accountsReady && me) row.user_id = me.id; // this row is now mine
+    const { data: mem, error } = await sb.from("members").insert(row).select().single();
     if (error) { toast("추가 실패", true); return; }
     rememberMe(state.room.id, mem.id);
     state.members.push(mem);
@@ -1968,6 +2037,141 @@
     location.search = "?r=" + room.id;
   }
 
+  // ── 로그인 화면 ──
+  function renderAuth() {
+    const up = authMode === "up";
+    $("auth-tabs").querySelectorAll("button").forEach((b) =>
+      b.classList.toggle("on", b.dataset.mode === authMode));
+    $("auth-sub").textContent = up ? "이름과 비밀번호를 정해요" : "이름과 비밀번호로 들어와요";
+    $("auth-id-hint").textContent = up ? "— 실명 두 글자" : "";
+    $("auth-signup-only").style.display = up ? "block" : "none";
+    $("auth-go").textContent = up ? "시작하기" : "로그인";
+    $("auth-pw").setAttribute("autocomplete", up ? "new-password" : "current-password");
+    $("auth-forgot").style.display = up ? "none" : "block";
+  }
+
+  async function submitAuth() {
+    const handle = $("auth-handle").value.trim();
+    const pw = $("auth-pw").value;
+    const btn = $("auth-go");
+    if (!HANDLE_RE.test(handle)) { toast("이름은 2~8글자로 적어주세요", true); return; }
+    if (pw.length < 6) { toast("비밀번호는 6자리예요", true); return; }
+    btn.disabled = true;
+    try {
+      if (authMode === "up") {
+        const q = $("auth-q").value.trim(), a = $("auth-a").value.trim();
+        if (!q || !a) { toast("비밀번호를 잊었을 때 쓸 질문과 답을 적어주세요", true); btn.disabled = false; return; }
+        if (await handleTaken(handle)) {
+          const free = await freeHandle(handle);
+          toast(free ? `'${handle}'은 이미 있어요 — '${free}'는 어때요?` : `'${handle}'은 이미 있어요`, true);
+          if (free) $("auth-handle").value = free;
+          btn.disabled = false; return;
+        }
+        await doSignUp(handle, pw, q, a);
+      } else {
+        await doSignIn(handle, pw);
+      }
+      btn.disabled = false;
+      await afterLogin();
+    } catch (err) {
+      btn.disabled = false;
+      toast(err.message || "실패했어요", true);
+    }
+  }
+
+  // Where to go once we know who you are: straight into the trip from a link,
+  // otherwise the list.
+  async function afterLogin() {
+    const roomId = new URLSearchParams(location.search).get("r");
+    if (roomId) { await boot(); return; }
+    show("screen-home");
+    $("home-me").textContent = me ? me.name : "-";
+    await renderHome();
+  }
+
+  async function logout() {
+    await sb.auth.signOut();
+    me = null;
+    location.href = location.pathname;
+  }
+
+  // ── 비밀번호 찾기 ──
+  function openForgot() {
+    $("forgot-handle").value = "";
+    $("forgot-a").value = "";
+    $("forgot-new").value = "";
+    $("forgot-step2").style.display = "none";
+    $("forgot-sub").textContent = "이름을 넣으면 가입할 때 정한 질문이 나와요.";
+    $("forgot-back").classList.add("show");
+  }
+  function closeForgot() { $("forgot-back").classList.remove("show"); }
+
+  async function askHint() {
+    const h = $("forgot-handle").value.trim();
+    if (!h) { toast("이름을 적어주세요", true); return; }
+    const { data, error } = await sb.rpc("hint_question", { p_handle: h });
+    if (error) { toast("확인 실패: " + error.message, true); return; }
+    if (!data) { toast("그 이름으로 정해둔 질문이 없어요", true); return; }
+    $("forgot-q").textContent = data;
+    $("forgot-step2").style.display = "block";
+    $("forgot-sub").textContent = "답을 맞히면 새 비밀번호로 바꿀 수 있어요.";
+    setTimeout(() => $("forgot-a").focus(), 60);
+  }
+
+  async function resetPassword() {
+    const h = $("forgot-handle").value.trim();
+    const a = $("forgot-a").value.trim();
+    const np = $("forgot-new").value;
+    if (!a) { toast("답을 적어주세요", true); return; }
+    if (np.length < 6) { toast("새 비밀번호는 6자리예요", true); return; }
+    const { data, error } = await sb.rpc("reset_password",
+      { p_handle: h, p_answer: a, p_new_pw: np });
+    if (error) { toast("실패: " + error.message, true); return; }
+    const msg = { ok: null, wrong: "답이 맞지 않아요", locked: "여러 번 틀려서 15분간 잠겼어요",
+                  nohint: "그 이름으로 정해둔 질문이 없어요", short: "비밀번호는 6자리예요" };
+    if (data !== "ok") { toast(msg[data] || "실패했어요", true); return; }
+    closeForgot();
+    toast("비밀번호가 바뀌었어요 — 새 비밀번호로 로그인하세요");
+    $("auth-handle").value = h;
+    $("auth-pw").value = "";
+    $("auth-pw").focus();
+  }
+
+  // ── 이 사람이 나예요 (기존 기록 잇기) ──
+  function openClaim(unclaimed) {
+    const box = $("claim-chips");
+    box.innerHTML = "";
+    unclaimed.forEach((m) => {
+      const b = document.createElement("button");
+      b.className = "name-chip";
+      b.textContent = m.name;
+      b.onclick = () => claimMember(m.id);
+      box.appendChild(b);
+    });
+    $("claim-sub").textContent = unclaimed.length
+      ? "전에 쓰던 이름을 고르면 그동안의 기록이 그대로 이어져요."
+      : "아직 아무도 없어요. 새로 참여하면 돼요.";
+    $("claim-back").classList.add("show");
+  }
+  function closeClaim() { $("claim-back").classList.remove("show"); }
+
+  async function claimMember(memberId) {
+    const { error } = await sb.from("members").update({ user_id: me.id }).eq("id", memberId);
+    if (error) { toast("실패: " + error.message, true); return; }
+    closeClaim();
+    rememberMe(state.room.id, memberId);
+    await refetch();
+    enterApp(memberId);
+  }
+
+  async function claimAsNew() {
+    closeClaim();
+    $("ident-back").style.display = "block";
+    $("ident-new").value = me ? me.name : "";
+    renderIdentity();
+    show("screen-identity");
+  }
+
   // ── password gate ──
   // Does the key we already stored still open this trip? (The owner may have
   // changed the password since.)
@@ -2017,8 +2221,17 @@
   async function boot() {
     const params = new URLSearchParams(location.search);
     const roomId = params.get("r");
+    await checkAccounts();
+    // Everything starts from "who is this?". Without a session there is
+    // nothing to show — the trip list is now personal.
+    if (accountsReady && !me) {
+      await loadMe();
+      if (!me) { renderAuth(); show("screen-auth"); return; }
+    }
+
     if (!roomId) {
       show("screen-home");
+      $("home-me").textContent = me ? me.name : "-";
       await renderHome();
       return;
     }
@@ -2065,6 +2278,19 @@
     // refresh the room's fallback rate in the background; re-render if it moved
     warmRoomRate().then((changed) => { if (changed) renderAll(); });
 
+    // With accounts, "who am I in this trip" is answered by the link between a
+    // member row and the logged-in user, not by a name saved in this browser.
+    if (accountsReady && me) {
+      const mine = state.members.find((m) => m.user_id === me.id);
+      if (mine) { rememberMe(roomId, mine.id); enterApp(mine.id); return; }
+      const unclaimed = state.members.filter((m) => !m.user_id);
+      show("screen-identity");
+      renderIdentity();
+      $("ident-back").style.display = "none";
+      openClaim(unclaimed);
+      return;
+    }
+
     const savedMe = recallMe(roomId);
     if (savedMe && state.members.some((m) => m.id === savedMe)) {
       enterApp(savedMe);
@@ -2104,6 +2330,24 @@
       show("screen-create");
     };
     $("create-back").onclick = () => { show("screen-home"); renderHome(); };
+
+    // accounts
+    $("auth-tabs").querySelectorAll("button").forEach((b) => {
+      b.onclick = () => { authMode = b.dataset.mode; renderAuth(); };
+    });
+    $("auth-go").onclick = submitAuth;
+    $("auth-handle").addEventListener("keydown", (e) => { if (e.key === "Enter") $("auth-pw").focus(); });
+    $("auth-pw").addEventListener("keydown", (e) => { if (e.key === "Enter" && authMode === "in") submitAuth(); });
+    $("auth-a").addEventListener("keydown", (e) => { if (e.key === "Enter") submitAuth(); });
+    $("auth-forgot").onclick = openForgot;
+    $("home-logout").onclick = logout;
+    $("forgot-ask").onclick = askHint;
+    $("forgot-save").onclick = resetPassword;
+    $("forgot-cancel").onclick = closeForgot;
+    $("forgot-back").onclick = (e) => { if (e.target === $("forgot-back")) closeForgot(); };
+    $("forgot-handle").addEventListener("keydown", (e) => { if (e.key === "Enter") askHint(); });
+    $("claim-new").onclick = claimAsNew;
+    $("claim-cancel").onclick = closeClaim;
 
     // password gate
     $("pw-go").onclick = submitPassword;

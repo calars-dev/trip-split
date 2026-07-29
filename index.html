@@ -415,6 +415,37 @@
 <body>
 <div id="app">
 
+  <!-- LOGIN / SIGNUP -->
+  <section id="screen-auth" class="screen">
+    <div class="center-col">
+      <div>
+        <div class="hero-title">✈️ 여행 정산</div>
+        <div class="hero-sub" id="auth-sub">이름과 비밀번호로 들어와요</div>
+      </div>
+      <div class="cur-toggle" id="auth-tabs" style="align-self:center">
+        <button data-mode="in" class="on">로그인</button>
+        <button data-mode="up">처음이에요</button>
+      </div>
+      <div>
+        <p class="field-label">이름 <span style="font-weight:400" id="auth-id-hint">— 실명 두 글자</span></p>
+        <input id="auth-handle" class="text-input" placeholder="예: 민수" maxlength="8" autocomplete="username" />
+      </div>
+      <div>
+        <p class="field-label">비밀번호 <span style="font-weight:400">— 6자리</span></p>
+        <input id="auth-pw" class="text-input" type="password" inputmode="numeric"
+               placeholder="숫자 6자리" maxlength="20" autocomplete="current-password" />
+      </div>
+      <div id="auth-signup-only" style="display:none">
+        <p class="field-label">비밀번호를 잊었을 때 물어볼 질문</p>
+        <input id="auth-q" class="text-input" placeholder="예: 우리 강아지 이름은?" maxlength="40" />
+        <p class="field-label" style="margin-top:12px">그 답</p>
+        <input id="auth-a" class="text-input" placeholder="답" maxlength="40" />
+      </div>
+      <button id="auth-go" class="primary">로그인</button>
+      <button class="ghost-btn" id="auth-forgot" style="align-self:center">비밀번호를 잊었어요</button>
+    </div>
+  </section>
+
   <!-- HOME (MY TRIPS) -->
   <section id="screen-home" class="screen">
     <div class="center-col">
@@ -424,6 +455,9 @@
       </div>
       <div class="trip-list" id="home-list"></div>
       <button id="home-new" class="primary">＋ 새 여행 만들기</button>
+      <div class="whoami" style="margin:4px 0 0">
+        <b id="home-me">-</b><button class="whoami-change" id="home-logout">로그아웃</button>
+      </div>
     </div>
   </section>
 
@@ -636,6 +670,34 @@
     <input id="rate-input" class="text-input" inputmode="decimal" placeholder="예: 908.4" />
     <button class="m-btn" id="rate-save" style="margin-top:14px">저장</button>
     <button class="m-btn cancel" id="rate-cancel">취소</button>
+  </div>
+</div>
+
+<div class="modal-back" id="forgot-back">
+  <div class="modal">
+    <h3>비밀번호 찾기</h3>
+    <div class="msub" id="forgot-sub">이름을 넣으면 가입할 때 정한 질문이 나와요.</div>
+    <input id="forgot-handle" class="text-input" placeholder="이름 (예: 민수)" maxlength="8" />
+    <button class="m-btn" id="forgot-ask" style="margin-top:12px">질문 보기</button>
+    <div id="forgot-step2" style="display:none">
+      <p class="field-label" id="forgot-q" style="margin-top:14px">질문</p>
+      <input id="forgot-a" class="text-input" placeholder="답" maxlength="40" />
+      <p class="field-label" style="margin-top:12px">새 비밀번호 (6자리)</p>
+      <input id="forgot-new" class="text-input" type="password" inputmode="numeric"
+             placeholder="숫자 6자리" maxlength="20" />
+      <button class="m-btn" id="forgot-save" style="margin-top:12px">바꾸기</button>
+    </div>
+    <button class="m-btn cancel" id="forgot-cancel">닫기</button>
+  </div>
+</div>
+
+<div class="modal-back" id="claim-back">
+  <div class="modal">
+    <h3 id="claim-title">이 여행에서 나는?</h3>
+    <div class="msub" id="claim-sub">전에 쓰던 이름을 고르면 그동안의 기록이 그대로 이어져요.</div>
+    <div class="name-chips" id="claim-chips" style="margin-bottom:14px"></div>
+    <button class="m-btn" id="claim-new">＋ 목록에 없어요 (새로 참여)</button>
+    <button class="m-btn cancel" id="claim-cancel">닫기</button>
   </div>
 </div>
 

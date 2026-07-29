@@ -297,8 +297,19 @@
   // Supabase can do the hashing, sessions and tokens — none of that is worth
   // hand-rolling. The user only ever types a name and six digits.
   const MAIL_DOMAIN = "@tripsplit.app";
-  const handleMail = (h) => h.trim().toLowerCase() + MAIL_DOMAIN;
   const HANDLE_RE = /^[가-힣a-zA-Z0-9]{2,8}$/;
+
+  // Supabase refuses an address whose local part isn't ASCII — "민수@…" is
+  // rejected outright as an invalid format. So the handle is written out as the
+  // hex of its UTF-8 bytes: "민수" becomes u_eba28cec8898@tripsplit.app.
+  // Deterministic, so the same name always lands on the same account, and the
+  // readable handle still lives in profiles.
+  function handleMail(h) {
+    const bytes = new TextEncoder().encode(h.trim().toLowerCase());
+    let hex = "";
+    for (let i = 0; i < bytes.length; i++) hex += bytes[i].toString(16).padStart(2, "0");
+    return "u_" + hex + MAIL_DOMAIN;
+  }
 
   let me = null;      // { id, handle, name }
   let authMode = "in";
@@ -307,7 +318,11 @@
   let accountsReady = false;
   async function checkAccounts() {
     try {
-      const { error } = await sb.from("profiles").select("id").limit(1);
+      // Ask something a signed-out visitor is allowed to ask. Probing the
+      // profiles table can't work: nobody may read it without a session, so it
+      // would answer "no accounts here" forever and the login screen would
+      // never appear.
+      const { error } = await sb.rpc("handle_available", { p_handle: "__probe__" });
       accountsReady = !error;
     } catch (err) { accountsReady = false; }
   }

@@ -198,7 +198,8 @@ const type = (w, id, v) => { $(w, id).value = v; };
   type(w, "auth-q", "우리 강아지 이름은?"); type(w, "auth-a", "coco");
   $(w, "auth-go").click(); await wait(400);
   ok("가입됨", W.users.length, 1);
-  ok("아이디는 메일 뒤에 숨김", W.users[0].email, "수형@tripsplit.app");
+  ok("한글 아이디는 ASCII 주소로 바뀌어 저장됨 (한글 주소는 Supabase 가 거부한다)",
+    W.users[0].email, "u_" + Buffer.from("수형", "utf8").toString("hex") + "@tripsplit.app");
   ok("프로필 생김", W.profiles.map((p) => [p.handle, p.name]), [["수형", "수형"]]);
   ok("질문·답은 다른 표에", W.profile_secrets.length, 1);
   ok("답은 해시로만 저장",

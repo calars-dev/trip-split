@@ -55,7 +55,13 @@ function makeClient(T, opts, log) {
     from: (t) => query(t),
     rpc: (fn, args) => {
       log.push({ rpc: fn, key: key });
-      return Promise.resolve({ data: fn === "room_ok" ? roomOk(args.p_room) : null, error: null });
+      // 이 스위트는 계정 기능이 **없는** DB를 흉내낸다. 없는 함수를 부르면
+      // 서버가 그러듯 오류를 돌려줘야, 앱이 "계정 없음"으로 바르게 판단한다.
+      if (fn !== "room_ok") {
+        return Promise.resolve({ data: null,
+          error: { message: 'function public.' + fn + ' does not exist' } });
+      }
+      return Promise.resolve({ data: roomOk(args.p_room), error: null });
     },
     storage: { from: () => ({ upload: () => Promise.resolve({ error: null }) }) },
     channel: () => ({ on() { return this; }, subscribe() { return this; } }),

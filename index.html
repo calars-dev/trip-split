@@ -4,7 +4,18 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
 <meta name="theme-color" content="#0f1115" />
+<meta name="description" content="친구들과의 여행 지출을 모으고, 누가 누구에게 얼마를 보내면 되는지 한 번에 계산해요." />
 <title>여행 정산</title>
+
+<!-- 홈 화면에 추가하면 주소창 없이 앱처럼 뜬다. 서비스 워커는 일부러 두지 않았다 —
+     캐시가 낡으면 친구들 폰에 옛 버전이 붙박이는 쪽이 더 위험하다. -->
+<link rel="manifest" href="manifest.json" />
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png" />
+<link rel="apple-touch-icon" href="icons/icon-180.png" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="여행 정산" />
 <style>
   :root {
     --bg: #0f1115;
@@ -357,6 +368,20 @@
                                border-radius: 50%; background: var(--bg); display: flex;
                                align-items: center; justify-content: center; font-size: 10px; }
 
+  /* ── "홈 화면에 추가" 안내 ── */
+  .install { position: fixed; left: 50%; transform: translateX(-50%);
+             bottom: calc(var(--safe-b) + 14px); width: calc(100% - 28px); max-width: 452px;
+             display: none; align-items: center; gap: 11px; z-index: 45;
+             background: var(--surface-2); border: 1px solid var(--line); border-radius: 14px;
+             padding: 12px 13px; box-shadow: 0 10px 28px rgba(0,0,0,.45); }
+  .install.show { display: flex; }
+  .install img { width: 38px; height: 38px; border-radius: 9px; flex: 0 0 auto; }
+  .install .ins-text { flex: 1; min-width: 0; font-size: 13.5px; line-height: 1.45; color: var(--muted); }
+  .install .ins-text b { color: var(--text); display: block; font-size: 14.5px; margin-bottom: 1px; }
+  .install .ins-go { flex: 0 0 auto; background: var(--accent); color: #0c1020; font-weight: 700;
+                     font-size: 14px; padding: 9px 14px; border-radius: 10px; }
+  .install .ins-x { flex: 0 0 auto; color: var(--faint); font-size: 19px; padding: 4px 6px; }
+
   /* ── receipt lightbox ── */
   .shotbox { position: fixed; inset: 0; z-index: 70; background: rgba(0,0,0,.92);
              display: none; align-items: center; justify-content: center;
@@ -541,6 +566,13 @@
 </div>
 
 <div id="toast"></div>
+
+<div class="install" id="install-hint">
+  <img src="icons/icon-192.png" alt="" />
+  <span class="ins-text"><b>홈 화면에 추가하세요</b><span id="install-how"></span></span>
+  <button class="ins-go" id="install-go" style="display:none">추가</button>
+  <button class="ins-x" id="install-x" aria-label="닫기">×</button>
+</div>
 
 <div class="modal-back" id="confirm-back">
   <div class="modal">

@@ -97,6 +97,35 @@
     document.querySelectorAll(".screen").forEach((s) => s.classList.remove("active"));
     $(id).classList.add("active");
     window.scrollTo(0, 0);
+    renderInstallHint(id);
+  }
+
+  // ── "홈 화면에 추가" ──
+  // Only where it helps: the trip list, and the moment a friend first opens a
+  // shared link. Never on top of the input screen, which has a save button
+  // right where this sits.
+  const INSTALL_KEY = "tripsplit_install_dismissed";
+  let installPrompt = null; // Chrome hands us one; Safari never does
+  const isStandalone = () =>
+    window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
+
+  function renderInstallHint(screenId) {
+    const el = $("install-hint");
+    const wanted = screenId === "screen-home" || screenId === "screen-identity";
+    if (!wanted || isStandalone() || localStorage.getItem(INSTALL_KEY)) {
+      el.classList.remove("show");
+      return;
+    }
+    const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+    $("install-go").style.display = installPrompt ? "block" : "none";
+    $("install-how").textContent = installPrompt
+      ? "앱처럼 전체화면으로 열려요"
+      : (ios ? "공유 버튼 → '홈 화면에 추가'" : "브라우저 메뉴 → '홈 화면에 추가'");
+    el.classList.add("show");
+  }
+  function dismissInstallHint() {
+    localStorage.setItem(INSTALL_KEY, "1");
+    $("install-hint").classList.remove("show");
   }
 
   // ── toast ──
@@ -1783,6 +1812,22 @@
 
   // ═══════════════════ WIRE EVENTS ═══════════════════
   function wire() {
+    // install hint
+    window.addEventListener("beforeinstallprompt", (e) => {
+      e.preventDefault();       // keep Chrome's own banner out of the way
+      installPrompt = e;
+      renderInstallHint(document.querySelector(".screen.active").id);
+    });
+    window.addEventListener("appinstalled", dismissInstallHint);
+    $("install-x").onclick = dismissInstallHint;
+    $("install-go").onclick = async () => {
+      if (!installPrompt) return;
+      installPrompt.prompt();
+      await installPrompt.userChoice;
+      installPrompt = null;
+      dismissInstallHint();
+    };
+
     // home (my trips)
     $("home-new").onclick = () => {
       $("create-back").style.display = getSavedRooms().length ? "block" : "none";

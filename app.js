@@ -32,10 +32,25 @@
   // every query from here on carries this key
   function useKey(key) { sb = makeClient(key || null); }
 
-  // Older databases have neither column; treat every room as open until the
-  // migration runs, so shipping this ahead of the SQL changes nothing.
-  const ROOM_COLS = "id,name,default_currency,start_date,base_rate_jpy,base_rate_date,created_at";
+  // `select *` is out: once the password migration lands, anon loses blanket
+  // select on rooms so pw_hash can never be read, and a star fails outright.
+  // But naming columns means naming ones this database might not have — the
+  // rate migration was never run here, for instance. So ask for everything and
+  // drop whatever it says it lacks, once, then remember.
+  let roomCols = ["id", "name", "default_currency", "start_date",
+                  "base_rate_jpy", "base_rate_date", "has_pw", "created_at"];
   let hasPwCol = true;
+  async function roomQuery(build) {
+    for (let i = 0; i <= roomCols.length; i++) {
+      const res = await build(roomCols.join(","));
+      if (!res.error) return res;
+      const miss = /column rooms\.(\w+) does not exist/.exec(res.error.message || "");
+      if (!miss || roomCols.indexOf(miss[1]) < 0) return res;
+      if (miss[1] === "has_pw") hasPwCol = false;
+      roomCols = roomCols.filter((c) => c !== miss[1]);
+    }
+    return { data: null, error: { message: "rooms 조회 실패" } };
+  }
 
   const CATEGORIES = [
     { key: "식비", emoji: "🍚" }, { key: "카페", emoji: "☕" },
@@ -282,22 +297,16 @@
   // loses blanket select on rooms so that pw_hash can never be read, and a
   // star would fail the permission check outright.
   async function loadRoom(roomId) {
-    let res = await sb.from("rooms").select(ROOM_COLS + ",has_pw").eq("id", roomId).maybeSingle();
-    if (res.error && /has_pw/.test(res.error.message || "")) {
-      hasPwCol = false;
-      res = await sb.from("rooms").select(ROOM_COLS).eq("id", roomId).maybeSingle();
-    }
+    const res = await roomQuery((cols) =>
+      sb.from("rooms").select(cols).eq("id", roomId).maybeSingle());
     if (res.error) throw res.error;
     return res.data;
   }
 
   // The whole catalogue, so a trip is never lost with the browser storage.
   async function loadAllRooms() {
-    let res = await sb.from("rooms").select(ROOM_COLS + ",has_pw").order("created_at", { ascending: false });
-    if (res.error && /has_pw/.test(res.error.message || "")) {
-      hasPwCol = false;
-      res = await sb.from("rooms").select(ROOM_COLS).order("created_at", { ascending: false });
-    }
+    const res = await roomQuery((cols) =>
+      sb.from("rooms").select(cols).order("created_at", { ascending: false }));
     return res.error ? [] : res.data;
   }
   const isLocked = (room) => hasPwCol && room && room.has_pw === true;

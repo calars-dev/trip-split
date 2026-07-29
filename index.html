@@ -228,7 +228,11 @@
               background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
               padding: 16px 18px; text-align: left; transition: all .12s; }
   .trip-row:active { transform: scale(0.985); border-color: var(--accent); }
-  .trip-row .t-name { font-size: 16px; font-weight: 700; }
+  .trip-row .t-name { font-size: 16px; font-weight: 700; display: flex; align-items: center; gap: 7px; }
+  .trip-row .t-lock { font-size: 13px; }
+  .trip-row .t-mine { font-size: 11px; font-weight: 700; color: var(--accent);
+                      background: color-mix(in srgb, var(--accent) 16%, transparent);
+                      padding: 2px 7px; border-radius: 999px; }
   .trip-row .t-arrow { color: var(--muted); font-size: 15px; }
   .trip-switch { font-size: 17px; font-weight: 700; letter-spacing: -0.01em; padding: 8px 2px 8px 0;
                  color: var(--text); display: flex; align-items: center; gap: 5px; }
@@ -450,6 +454,10 @@
         <p class="field-label">내 이름 (총무)</p>
         <input id="create-me" class="text-input" placeholder="예: 민수" maxlength="12" />
       </div>
+      <div>
+        <p class="field-label">비밀번호 <span style="font-weight:400">— 선택, 걸면 아는 사람만 열 수 있어요</span></p>
+        <input id="create-pw" class="text-input" type="password" placeholder="비워두면 누구나 열 수 있어요" maxlength="40" />
+      </div>
       <button id="create-go" class="primary">방 만들기</button>
     </div>
   </section>
@@ -544,6 +552,10 @@
     <button class="startdate" id="startdate-btn">
       <span>📅</span><span class="sd-text" id="startdate-text">—</span><span class="sd-edit">바꾸기</span>
     </button>
+    <button class="startdate" id="lock-btn" style="display:none">
+      <span id="lock-icon">🔓</span><span class="sd-text" id="lock-text">—</span>
+      <span class="sd-edit">바꾸기</span>
+    </button>
     <div class="section-title">잔액 <span style="font-weight:400; color:var(--faint)">— 이름을 탭하면 그 사람 기록만</span></div>
     <div class="balances" id="balances"></div>
     <button class="settle-btn" id="settle-btn">🧮 정산하기</button>
@@ -624,6 +636,26 @@
     <input id="rate-input" class="text-input" inputmode="decimal" placeholder="예: 908.4" />
     <button class="m-btn" id="rate-save" style="margin-top:14px">저장</button>
     <button class="m-btn cancel" id="rate-cancel">취소</button>
+  </div>
+</div>
+
+<div class="modal-back" id="pw-back">
+  <div class="modal">
+    <h3 id="pw-title">여행</h3>
+    <div class="msub" id="pw-sub"></div>
+    <input id="pw-input" class="text-input" type="password" placeholder="비밀번호" maxlength="40" />
+    <button class="m-btn" id="pw-go" style="margin-top:14px">열기</button>
+    <button class="m-btn cancel" id="pw-cancel">취소</button>
+  </div>
+</div>
+
+<div class="modal-back" id="setpw-back">
+  <div class="modal">
+    <h3>비밀번호</h3>
+    <div class="msub" id="setpw-sub"></div>
+    <input id="setpw-input" class="text-input" type="password" placeholder="새 비밀번호 (비우면 잠금 해제)" maxlength="40" />
+    <button class="m-btn" id="setpw-save" style="margin-top:14px">저장</button>
+    <button class="m-btn cancel" id="setpw-cancel">취소</button>
   </div>
 </div>
 

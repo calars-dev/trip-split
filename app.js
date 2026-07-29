@@ -3,7 +3,39 @@
   "use strict";
 
   const CFG = window.TRIP_SPLIT_CONFIG;
-  const sb = window.supabase.createClient(CFG.SUPABASE_URL, CFG.SUPABASE_ANON_KEY);
+
+  // ── room keys ──
+  // A locked trip is proven with a header, not a screen check: the server
+  // refuses to hand over members or expenses unless `x-trip-key` matches. The
+  // password itself never leaves the device — only sha256(roomId:password).
+  function makeClient(key) {
+    const opts = key ? { global: { headers: { "x-trip-key": key } } } : undefined;
+    return window.supabase.createClient(CFG.SUPABASE_URL, CFG.SUPABASE_ANON_KEY, opts);
+  }
+  let sb = makeClient(null);
+
+  // crypto.subtle only exists in a secure context. Over plain http it is simply
+  // absent, and without a clear message that surfaces as the app dying on the
+  // password screen.
+  const canHash = () => !!(window.crypto && window.crypto.subtle);
+  async function sha256Hex(s) {
+    if (!canHash()) throw new Error("주소가 https 여야 비밀번호를 쓸 수 있어요");
+    const buf = await window.crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+    return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  }
+  const roomKey = (roomId, pw) => sha256Hex(roomId + ":" + pw);
+
+  const keyStore = (roomId) => "tripsplit_key_" + roomId;
+  const recallKey = (roomId) => localStorage.getItem(keyStore(roomId));
+  const rememberKey = (roomId, key) => localStorage.setItem(keyStore(roomId), key);
+  const forgetKey = (roomId) => localStorage.removeItem(keyStore(roomId));
+  // every query from here on carries this key
+  function useKey(key) { sb = makeClient(key || null); }
+
+  // Older databases have neither column; treat every room as open until the
+  // migration runs, so shipping this ahead of the SQL changes nothing.
+  const ROOM_COLS = "id,name,default_currency,start_date,base_rate_jpy,base_rate_date,created_at";
+  let hasPwCol = true;
 
   const CATEGORIES = [
     { key: "식비", emoji: "🍚" }, { key: "카페", emoji: "☕" },
@@ -246,11 +278,29 @@
   }
 
   // ═══════════════════ DATA ═══════════════════
+  // Columns are listed rather than `select *`: once the migration lands, anon
+  // loses blanket select on rooms so that pw_hash can never be read, and a
+  // star would fail the permission check outright.
   async function loadRoom(roomId) {
-    const { data: room, error } = await sb.from("rooms").select("*").eq("id", roomId).maybeSingle();
-    if (error) throw error;
-    return room;
+    let res = await sb.from("rooms").select(ROOM_COLS + ",has_pw").eq("id", roomId).maybeSingle();
+    if (res.error && /has_pw/.test(res.error.message || "")) {
+      hasPwCol = false;
+      res = await sb.from("rooms").select(ROOM_COLS).eq("id", roomId).maybeSingle();
+    }
+    if (res.error) throw res.error;
+    return res.data;
   }
+
+  // The whole catalogue, so a trip is never lost with the browser storage.
+  async function loadAllRooms() {
+    let res = await sb.from("rooms").select(ROOM_COLS + ",has_pw").order("created_at", { ascending: false });
+    if (res.error && /has_pw/.test(res.error.message || "")) {
+      hasPwCol = false;
+      res = await sb.from("rooms").select(ROOM_COLS).order("created_at", { ascending: false });
+    }
+    return res.error ? [] : res.data;
+  }
+  const isLocked = (room) => hasPwCol && room && room.has_pw === true;
   async function refetch() {
     const [mRes, eRes] = await Promise.all([
       sb.from("members").select("*").eq("room_id", state.room.id).order("created_at"),
@@ -710,6 +760,7 @@
     renderExpenseList($("status-exp-list"), state.expenses, "아직 지출이 없어요.");
     renderMembers();
     renderStartDate();
+    renderLockRow();
     $("whoami-name").textContent = memberName(state.me);
     $("delete-trip-btn").style.display = isOwner(state.room.id) ? "block" : "none";
     $("settle-box").innerHTML = "";
@@ -806,6 +857,52 @@
       ? `시작일 변경 · 일차 ${Math.abs(moved)}칸 ${moved > 0 ? "당겨짐" : "밀림"}`
       : "시작일 저장됨");
     await refetch();
+  }
+
+  // ── 비밀번호 설정·변경 ──
+  function renderLockRow() {
+    const btn = $("lock-btn");
+    if (!hasPwCol) { btn.style.display = "none"; return; }
+    btn.style.display = "flex";
+    const locked = isLocked(state.room);
+    btn.classList.toggle("unset", !locked);
+    $("lock-icon").textContent = locked ? "🔒" : "🔓";
+    $("lock-text").textContent = locked
+      ? "비밀번호가 걸려 있어요"
+      : "비밀번호 없음 — 목록에서 누구나 열 수 있어요";
+  }
+  function openSetPw() {
+    $("setpw-sub").textContent = isLocked(state.room)
+      ? "새 비밀번호로 바꿔요. 비우고 저장하면 잠금이 풀려요.\n이미 들어와 있는 친구들은 다시 입력해야 해요."
+      : "비밀번호를 걸면 아는 사람만 열 수 있어요.\n친구들에게 따로 알려주세요.";
+    $("setpw-input").value = "";
+    $("setpw-back").classList.add("show");
+    setTimeout(() => $("setpw-input").focus(), 80);
+  }
+  function closeSetPw() { $("setpw-back").classList.remove("show"); }
+
+  async function saveRoomPassword() {
+    const pw = $("setpw-input").value;
+    const id = state.room.id;
+    closeSetPw();
+    let key = null, patch;
+    try {
+      key = pw ? await roomKey(id, pw) : null;
+      patch = { pw_hash: key ? await sha256Hex(key) : null };
+    } catch (err) { toast(err.message, true); return; }
+    const { error } = await sb.from("rooms").update(patch).eq("id", id);
+    if (error) {
+      toast(/pw_hash/.test(error.message || "")
+        ? "migration-password.sql 먼저 실행해 주세요" : "저장 실패: " + error.message, true);
+      return;
+    }
+    // Swap our own key over before the next query goes out, or we lock
+    // ourselves out of the trip we just secured.
+    if (key) rememberKey(id, key); else forgetKey(id);
+    useKey(key);
+    state.room.has_pw = !!key;
+    toast(key ? "비밀번호 설정됨 🔒" : "잠금 해제됨");
+    renderStatus();
   }
 
   function deleteTrip() {
@@ -1745,15 +1842,36 @@
     if (!start) { toast("여행 시작일을 선택하세요", true); return; }
     if (!meName) { toast("내 이름을 입력하세요", true); return; }
     const id = genRoomId();
+    const pw = $("create-pw").value;
     const btn = $("create-go"); btn.disabled = true;
-    let { error: rErr } = await sb.from("rooms")
-      .insert({ id, name, default_currency: cur, start_date: start });
+
+    // The key goes in at creation time and is remembered here, so the creator
+    // never has to type it again on this device.
+    const row = { id, name, default_currency: cur, start_date: start };
+    let key = null;
+    if (pw) {
+      try {
+        key = await roomKey(id, pw);
+        row.pw_hash = await sha256Hex(key); // the server stores the hash of the key
+        rememberKey(id, key);
+      } catch (err) { btn.disabled = false; toast(err.message, true); return; }
+    }
+    let { error: rErr } = await sb.from("rooms").insert(row);
+    if (rErr && /pw_hash/.test(rErr.message || "")) {
+      // database predates the password migration — make the room unlocked
+      delete row.pw_hash;
+      forgetKey(id); key = null;
+      ({ error: rErr } = await sb.from("rooms").insert(row));
+      if (!rErr && pw) toast("비밀번호는 아직 적용 안 됨 — SQL 실행 필요", true);
+    }
     if (rErr && isMissingTimelineCol(rErr)) {
       // un-migrated DB: make the room anyway, the date can be set later
       timelineColsMissing = true;
-      ({ error: rErr } = await sb.from("rooms").insert({ id, name, default_currency: cur }));
+      delete row.start_date;
+      ({ error: rErr } = await sb.from("rooms").insert(row));
     }
     if (rErr) { btn.disabled = false; toast("방 생성 실패: " + rErr.message, true); return; }
+    useKey(key); // members/expenses below need the key straight away
     const { data: mem, error: mErr } = await sb.from("members").insert({ room_id: id, name: meName }).select().single();
     if (mErr) { btn.disabled = false; toast("멤버 생성 실패", true); return; }
     rememberMe(id, mem.id);
@@ -1804,18 +1922,86 @@
     setTimeout(() => $("amount").focus(), 100);
   }
 
-  // ── home (my trips) ──
-  function renderHome() {
-    const list = getSavedRooms();
+  // ── home (every trip) ──
+  // The list used to live only in this browser, which meant a trip vanished on
+  // a new device, after installing to the home screen, or simply because iOS
+  // clears site storage that hasn't been touched for a week. It comes from the
+  // server now; the local record only marks which ones you've been in.
+  async function renderHome() {
     const box = $("home-list");
+    box.innerHTML = `<div class="empty">불러오는 중…</div>`;
+    const mine = {};
+    getSavedRooms().forEach((r) => { mine[r.id] = true; });
+    const rooms = await loadAllRooms();
+    if (!rooms.length) {
+      box.innerHTML = `<div class="empty">아직 만들어진 여행이 없어요.</div>`;
+      return;
+    }
     box.innerHTML = "";
-    list.forEach((r) => {
+    // ones you've already joined first — that's almost always what you want
+    rooms.sort((a, b) => (mine[b.id] ? 1 : 0) - (mine[a.id] ? 1 : 0));
+    rooms.forEach((r) => {
       const b = document.createElement("button");
       b.className = "trip-row";
-      b.innerHTML = `<span class="t-name">${escapeHtml(r.name)}</span><span class="t-arrow">→</span>`;
-      b.onclick = () => { location.search = "?r=" + r.id; };
+      const lock = isLocked(r)
+        ? `<span class="t-lock">${recallKey(r.id) ? "🔓" : "🔒"}</span>` : "";
+      const tag = mine[r.id] ? `<span class="t-mine">참여 중</span>` : "";
+      b.innerHTML = `<span class="t-name">${escapeHtml(r.name)}${lock}${tag}</span>
+        <span class="t-arrow">→</span>`;
+      b.onclick = () => enterRoom(r);
       box.appendChild(b);
     });
+  }
+
+  // Tapping a trip: unlocked ones open, locked ones ask once and remember.
+  function enterRoom(room) {
+    if (isLocked(room) && !recallKey(room.id)) { askPassword(room); return; }
+    location.search = "?r=" + room.id;
+  }
+
+  // ── password gate ──
+  // Does the key we already stored still open this trip? (The owner may have
+  // changed the password since.)
+  async function keyWorks(roomId) {
+    const key = recallKey(roomId);
+    if (!key) return false;
+    useKey(key);
+    const { data, error } = await sb.rpc("room_ok", { p_room: roomId });
+    if (error) return true; // database predates the migration — nothing is locked yet
+    if (data !== true) { forgetKey(roomId); useKey(null); return false; }
+    return true;
+  }
+
+  let pwRoom = null;
+  function askPassword(room, opts) {
+    pwRoom = room;
+    const retry = opts && opts.retry;
+    $("pw-title").textContent = escapeHtml(room.name);
+    $("pw-sub").textContent = retry
+      ? "비밀번호가 맞지 않아요. 다시 입력해 주세요."
+      : "이 여행은 비밀번호가 걸려 있어요.";
+    $("pw-input").value = "";
+    $("pw-back").classList.add("show");
+    setTimeout(() => $("pw-input").focus(), 80);
+  }
+  function closePassword() { $("pw-back").classList.remove("show"); pwRoom = null; }
+
+  async function submitPassword() {
+    const room = pwRoom;
+    const pw = $("pw-input").value;
+    if (!room || !pw) { toast("비밀번호를 입력하세요", true); return; }
+    let key;
+    try { key = await roomKey(room.id, pw); }
+    catch (err) { toast(err.message, true); return; }
+    // The server decides, not this screen. room_ok() reads a hash this client
+    // is not allowed to select, so there is nothing here to bypass — and it
+    // answers even for a trip that has no expenses in it yet.
+    const { data, error } = await makeClient(key).rpc("room_ok", { p_room: room.id });
+    if (error) { toast("확인 실패: " + error.message, true); return; }
+    if (data !== true) { askPassword(room, { retry: true }); return; }
+    rememberKey(room.id, key);
+    closePassword();
+    location.search = "?r=" + room.id;
   }
 
   // ═══════════════════ BOOT ═══════════════════
@@ -1823,12 +2009,13 @@
     const params = new URLSearchParams(location.search);
     const roomId = params.get("r");
     if (!roomId) {
-      if (getSavedRooms().length) { renderHome(); show("screen-home"); }
-      else { $("create-start").value = todayStr(); show("screen-create"); }
+      show("screen-home");
+      await renderHome();
       return;
     }
 
     show("screen-loading");
+    useKey(recallKey(roomId)); // a trip unlocked before stays unlocked
     let room;
     try { room = await loadRoom(roomId); }
     catch (err) {
@@ -1841,6 +2028,16 @@
       forgetRoomLocal(roomId); // deleted or gone → drop from my list
       toast("방을 찾을 수 없어요 (삭제됐을 수 있어요)", true);
       goHome();
+      return;
+    }
+
+    // A locked trip opened straight from a link. Without this the members and
+    // expenses would come back empty and it would look like a blank trip
+    // rather than one that needs a password.
+    if (isLocked(room) && !(await keyWorks(roomId))) {
+      show("screen-home");
+      await renderHome();
+      askPassword(room);
       return;
     }
 
@@ -1897,7 +2094,18 @@
       if (!$("create-start").value) $("create-start").value = todayStr();
       show("screen-create");
     };
-    $("create-back").onclick = () => { renderHome(); show("screen-home"); };
+    $("create-back").onclick = () => { show("screen-home"); renderHome(); };
+
+    // password gate
+    $("pw-go").onclick = submitPassword;
+    $("pw-cancel").onclick = closePassword;
+    $("pw-back").onclick = (e) => { if (e.target === $("pw-back")) closePassword(); };
+    $("pw-input").addEventListener("keydown", (e) => { if (e.key === "Enter") submitPassword(); });
+    $("lock-btn").onclick = openSetPw;
+    $("setpw-save").onclick = saveRoomPassword;
+    $("setpw-cancel").onclick = closeSetPw;
+    $("setpw-back").onclick = (e) => { if (e.target === $("setpw-back")) closeSetPw(); };
+    $("setpw-input").addEventListener("keydown", (e) => { if (e.key === "Enter") saveRoomPassword(); });
 
     // create screen
     $("create-cur").querySelectorAll("button").forEach((b) => {

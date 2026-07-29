@@ -12,7 +12,8 @@ function world() {
   return {
     users: [],                       // { id, email, password }
     session: null,
-    profiles: [],                    // { id, handle, name, hint_q, hint_hash }
+    profiles: [],                    // { id, handle, name }
+    profile_secrets: [],             // { id, hint_q, hint_hash }  ← 별도 표
     rooms: [{ id: ROOM, name: "교토 - 띱", default_currency: "KRW",
               start_date: "2026-07-24", created_at: "2026-07-20T00:00:00Z" }],
     members: [
@@ -33,6 +34,16 @@ function makeClient(W) {
           ? String(r[f[1]]).toLowerCase() === String(f[2]).toLowerCase()
           : String(r[f[1]]) === String(f[2])));
     }
+    // 서버 정책을 흉내낸다. 잠근 뒤 상태를 시험하려는 것이므로 여기서 걸러야
+    // "내 여행만 보인다" 를 실제로 검증하는 것이 된다.
+    const mySeat = (roomId) => W.session &&
+      W.members.some((m) => m.room_id === roomId && m.user_id === W.session.id);
+    function visible(r) {
+      if (!W.session) return false;
+      if (table === "profiles" || table === "profile_secrets") return r.id === W.session.id;
+      if (table === "rooms") return mySeat(r.id);
+      return mySeat(r.room_id);
+    }
     function run() {
       if (!W[table]) return { data: null, error: { message: 'relation "' + table + '" does not exist' } };
       if (adding) {
@@ -40,7 +51,7 @@ function makeClient(W) {
         list.forEach((a) => W[table].push(Object.assign({ id: "row" + (++uid) }, a)));
         return { data: single ? list[0] : list, error: null };
       }
-      const rs = rows();
+      const rs = rows().filter(visible);
       if (patch) { rs.forEach((r) => Object.assign(r, patch)); return { data: rs, error: null }; }
       return { data: single ? (rs[0] || null) : rs, error: null };
     }
@@ -60,19 +71,54 @@ function makeClient(W) {
   return {
     from: (t) => query(t),
     rpc: (fn, a) => {
+      const byHandle = (h) => W.profiles.find((x) =>
+        x.handle.toLowerCase() === String(h || "").trim().toLowerCase());
+      const secretOf = (p) => p && W.profile_secrets.find((s) => s.id === p.id);
+      const uid = () => (W.session ? W.session.id : null);
+
+      if (fn === "handle_available") return Promise.resolve({ data: !byHandle(a.p_handle), error: null });
+
       if (fn === "hint_question") {
-        const p = W.profiles.find((x) => x.handle.toLowerCase() === (a.p_handle || "").trim().toLowerCase());
-        return Promise.resolve({ data: p ? p.hint_q : null, error: null });
+        const s = secretOf(byHandle(a.p_handle));
+        return Promise.resolve({ data: s ? s.hint_q : null, error: null });
       }
       if (fn === "reset_password") {
-        const p = W.profiles.find((x) => x.handle.toLowerCase() === (a.p_handle || "").trim().toLowerCase());
-        if (!p || !p.hint_hash) return Promise.resolve({ data: "nohint", error: null });
+        const p = byHandle(a.p_handle), s = secretOf(p);
+        if (!s || !s.hint_hash) return Promise.resolve({ data: "nohint", error: null });
         if ((a.p_new_pw || "").length < 6) return Promise.resolve({ data: "short", error: null });
-        if (p.hint_answer !== (a.p_answer || "").trim().toLowerCase())
+        if (s.hint_answer !== String(a.p_answer || "").trim().toLowerCase())
           return Promise.resolve({ data: "wrong", error: null });
-        const u = W.users.find((x) => x.id === p.id);
-        u.password = a.p_new_pw;
+        W.users.find((x) => x.id === p.id).password = a.p_new_pw;
         return Promise.resolve({ data: "ok", error: null });
+      }
+
+      // 아래 셋은 "방 ID 를 아는 사람" 만 부를 수 있는 서버 함수다.
+      if (fn === "room_peek") {
+        const r = W.rooms.find((x) => x.id === a.p_room);
+        return Promise.resolve({ data: r ? r.name : null, error: null });
+      }
+      if (fn === "room_roster") {
+        return Promise.resolve({ error: null, data: W.members
+          .filter((m) => m.room_id === a.p_room && !m.user_id)
+          .map((m) => ({ id: m.id, name: m.name })) });
+      }
+      if (fn === "claim_seat") {
+        if (!uid()) return Promise.resolve({ data: false, error: null });
+        if (W.members.some((m) => m.room_id === a.p_room && m.user_id === uid()))
+          return Promise.resolve({ data: false, error: null });
+        const seat = W.members.find((m) => m.id === a.p_member && m.room_id === a.p_room && !m.user_id);
+        if (!seat) return Promise.resolve({ data: false, error: null });
+        seat.user_id = uid();
+        return Promise.resolve({ data: true, error: null });
+      }
+      if (fn === "join_room") {
+        if (!uid()) return Promise.resolve({ data: null, error: null });
+        const had = W.members.find((m) => m.room_id === a.p_room && m.user_id === uid());
+        if (had) return Promise.resolve({ data: had.id, error: null });
+        const row = { id: "m" + (W.members.length + 1), room_id: a.p_room,
+                      name: String(a.p_name || "").trim(), user_id: uid() };
+        W.members.push(row);
+        return Promise.resolve({ data: row.id, error: null });
       }
       return Promise.resolve({ data: null, error: null });
     },
@@ -154,8 +200,12 @@ const type = (w, id, v) => { $(w, id).value = v; };
   ok("가입됨", W.users.length, 1);
   ok("아이디는 메일 뒤에 숨김", W.users[0].email, "수형@tripsplit.app");
   ok("프로필 생김", W.profiles.map((p) => [p.handle, p.name]), [["수형", "수형"]]);
-  ok("답은 해시로만 저장", /coco/.test(JSON.stringify(W.profiles)), false);
+  ok("질문·답은 다른 표에", W.profile_secrets.length, 1);
+  ok("답은 해시로만 저장",
+    /coco/.test(JSON.stringify(W.profiles) + JSON.stringify(W.profile_secrets)), false);
   ok("여행 목록으로 감", screenOf(w), "screen-home");
+  ok("아직 낀 여행이 없으니 목록도 비어 있음",
+    [...w.document.querySelectorAll("#home-list .trip-row")].length, 0);
 
   console.log("\n[중복 이름] 다른 사람이 먼저 가져간 경우");
   w = await session(W);
@@ -180,7 +230,7 @@ const type = (w, id, v) => { $(w, id).value = v; };
   ok("내 이름이 보임", $(w, "home-me").textContent, "수형");
 
   console.log("\n[비밀번호 찾기] 질문으로 되찾기");
-  W.profiles[0].hint_answer = "coco";      // 가짜 서버가 비교에 쓸 정답
+  W.profile_secrets[0].hint_answer = "coco";   // 가짜 서버가 비교에 쓸 정답
   W.session = null;
   w = await session(W);
   $(w, "auth-forgot").click(); await wait(80);
@@ -198,23 +248,42 @@ const type = (w, id, v) => { $(w, id).value = v; };
   $(w, "auth-go").click(); await wait(350);
   ok("새 비밀번호로 로그인됨", screenOf(w), "screen-home");
 
-  console.log("\n[기존 기록 잇기] '이 사람이 나예요'");
+  console.log("\n[링크로 초대] 아직 자리가 없어도 방 이름과 명단이 보인다");
   w = await session(W, "?r=" + ROOM);
-  await wait(200);
-  ok("고르라고 물어봄", $(w, "claim-back").classList.contains("show"), true);
+  await wait(250);
+  ok("이름을 고르라고 물어봄", $(w, "claim-back").classList.contains("show"), true);
+  ok("방 이름은 서버가 알려줌", $(w, "ident-room").textContent, "교토 - 띱");
   const chips = [...w.document.querySelectorAll("#claim-chips .name-chip")].map((c) => c.textContent);
   ok("아직 주인 없는 이름만 나옴", chips, ["수형", "인태"]);
+
+  console.log("\n[자리 잡기] 서버가 확인하고 붙여준다");
   [...w.document.querySelectorAll("#claim-chips .name-chip")][0].click();
   await wait(300);
   ok("그 줄에 내 계정이 붙음", W.members.find((m) => m.id === "m1").user_id, W.users[0].id);
   ok("남의 줄은 그대로", W.members.find((m) => m.id === "m2").user_id, null);
-  ok("여행 안으로 들어감", screenOf(w), "screen-input");
 
   console.log("\n[다시 열기] 한 번 이었으면 안 묻는다");
   w = await session(W, "?r=" + ROOM);
-  await wait(200);
+  await wait(250);
   ok("바로 들어감", screenOf(w), "screen-input");
   ok("안 물어봄", $(w, "claim-back").classList.contains("show"), false);
+
+  console.log("\n[목록] 이제 이 여행이 내 목록에 뜬다");
+  w = await session(W);
+  await wait(250);
+  ok("내 여행 1개", [...w.document.querySelectorAll("#home-list .trip-row")]
+    .map((r) => r.querySelector(".t-name").textContent.replace("참여 중", "").trim()), ["교토 - 띱"]);
+
+  console.log("\n[남의 계정] 자리를 두 번 가질 수 없다");
+  const before = JSON.stringify(W.members);
+  const other = { id: "u99", email: "낯선@tripsplit.app", password: "111111" };
+  W.users.push(other); W.session = other;
+  W.profiles.push({ id: "u99", handle: "낯선", name: "낯선" });
+  w = await session(W, "?r=" + ROOM);
+  await wait(250);
+  const left = [...w.document.querySelectorAll("#claim-chips .name-chip")].map((c) => c.textContent);
+  ok("남은 자리만 보임 (수형은 이미 찼음)", left, ["인태"]);
+  ok("내 자리는 그대로", W.members.find((m) => m.id === "m1").user_id, W.users[0].id);
 
   console.log("\n[로그아웃] 누르면 세션이 끊긴다");
   w = await session(W);
@@ -225,14 +294,18 @@ const type = (w, id, v) => { $(w, id).value = v; };
   w = await session(W);
   ok("다시 열면 로그인 화면", screenOf(w), "screen-auth");
 
-  console.log("\n[남의 여행] 계정에 안 붙은 방은 목록에 없다");
+  console.log("\n[남의 여행] 내가 안 낀 방은 목록에 안 뜬다");
   W.rooms.push({ id: "other", name: "남의 여행", default_currency: "KRW",
                  start_date: "2026-08-01", created_at: "2026-07-25T00:00:00Z" });
   W.members.push({ id: "m9", room_id: "other", name: "낯선이", user_id: "u999",
                    created_at: "2026-07-25T00:00:01Z" });
-  // 서버(RLS)가 걸러주는 몫이라, 여기서는 앱이 서버가 준 것만 그리는지 본다
-  ok("가짜 서버가 다 주면 다 그린다 (거르는 건 RLS 몫)",
-    typeof W.rooms.length, "number");
+  W.session = W.users[0];                       // 수형으로 다시
+  w = await session(W);
+  await wait(250);
+  const names = [...w.document.querySelectorAll("#home-list .trip-row")]
+    .map((r) => r.querySelector(".t-name").textContent.replace("참여 중", "").trim());
+  ok("내 여행만 보임", names, ["교토 - 띱"]);
+  ok("남의 여행은 없음", names.indexOf("남의 여행"), -1);
 
   console.log("\n" + (failures ? failures + "건 실패" : "전부 통과"));
   process.exit(failures ? 1 : 0);

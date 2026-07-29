@@ -320,9 +320,12 @@
     return me;
   }
 
+  // Ask yes/no rather than reading the table: a readable profiles table is a
+  // list of everyone's names for anyone who asks.
   async function handleTaken(handle) {
-    const { data } = await sb.from("profiles").select("id").ilike("handle", handle.trim()).limit(1);
-    return !!(data && data.length);
+    const { data, error } = await sb.rpc("handle_available", { p_handle: handle.trim() });
+    if (error) return false;
+    return data === false;
   }
 
   // Suggest 민수2, 민수3 … so a common name isn't a dead end.
@@ -340,13 +343,17 @@
     if (error) throw new Error(/already/i.test(error.message) ? "이미 쓰이는 이름이에요" : error.message);
     if (!data.session) throw new Error("가입은 됐는데 로그인이 안 됐어요. 다시 로그인해 주세요.");
     const uid = data.user.id;
-    const row = { id: uid, handle: handle.trim(), name: handle.trim() };
-    if (q && a) {
-      row.hint_q = q.trim();
-      row.hint_hash = await sha256Hex(a.trim().toLowerCase() + ":" + uid);
-    }
-    const { error: pErr } = await sb.from("profiles").insert(row);
+    const { error: pErr } = await sb.from("profiles")
+      .insert({ id: uid, handle: handle.trim(), name: handle.trim() });
     if (pErr) throw new Error("프로필 저장 실패: " + pErr.message);
+    if (q && a) {
+      // the answer lives in its own table, and never leaves here in the clear
+      const { error: sErr } = await sb.from("profile_secrets").insert({
+        id: uid, hint_q: q.trim(),
+        hint_hash: await sha256Hex(a.trim().toLowerCase() + ":" + uid),
+      });
+      if (sErr) toast("질문은 저장 못 했어요 — 비밀번호를 잘 기억해 주세요", true);
+    }
     await loadMe();
   }
 
@@ -2155,21 +2162,29 @@
   }
   function closeClaim() { $("claim-back").classList.remove("show"); }
 
+  // Taking a seat goes through the server, which checks the seat is in this
+  // trip and still free. Leaving that to a row policy would mean the policy has
+  // to let strangers see unclaimed rows — and a policy that shows rows also
+  // lets them be listed.
   async function claimMember(memberId) {
-    const { error } = await sb.from("members").update({ user_id: me.id }).eq("id", memberId);
+    const { data, error } = await sb.rpc("claim_seat",
+      { p_room: state.room.id, p_member: memberId });
     if (error) { toast("실패: " + error.message, true); return; }
+    if (data !== true) { toast("이미 다른 사람이 가져갔어요", true); return; }
     closeClaim();
     rememberMe(state.room.id, memberId);
-    await refetch();
-    enterApp(memberId);
+    // Re-boot rather than patch state: until this moment the trip's rows were
+    // invisible to us, so there is nothing loaded to update.
+    location.search = "?r=" + state.room.id;
   }
 
   async function claimAsNew() {
+    const name = (me && me.name) || "";
+    const { data, error } = await sb.rpc("join_room", { p_room: state.room.id, p_name: name });
+    if (error || !data) { toast("참여 실패" + (error ? ": " + error.message : ""), true); return; }
     closeClaim();
-    $("ident-back").style.display = "block";
-    $("ident-new").value = me ? me.name : "";
-    renderIdentity();
-    show("screen-identity");
+    rememberMe(state.room.id, data);
+    location.search = "?r=" + state.room.id;
   }
 
   // ── password gate ──
@@ -2245,6 +2260,21 @@
       $("create-start").value = todayStr();
       show("screen-create");
       return;
+    }
+    // Invited by link but not in the trip yet: the row policy hides it, so ask
+    // the server what it's called and who is still unclaimed.
+    if (!room && accountsReady && me) {
+      const peek = await sb.rpc("room_peek", { p_room: roomId });
+      if (peek.data) {
+        state.room = { id: roomId, name: peek.data };
+        const roster = await sb.rpc("room_roster", { p_room: roomId });
+        $("ident-room").textContent = peek.data;
+        $("ident-chips").innerHTML = "";
+        $("ident-back").style.display = "none";
+        show("screen-identity");
+        openClaim((roster.data || []).map((m) => ({ id: m.id, name: m.name })));
+        return;
+      }
     }
     if (!room) {
       forgetRoomLocal(roomId); // deleted or gone → drop from my list

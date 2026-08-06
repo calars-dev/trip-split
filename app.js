@@ -791,7 +791,7 @@
     $("amt-sym").textContent = CUR[d.currency];
     renderAmountPreview();
     // who summary
-    const payer = memberName(d.payerId);
+    const payer = escapeHtml(memberName(d.payerId));
     const n = d.participants.size;
     const allN = state.members.length;
     const splitTxt = n === allN ? `${n}명이 나눔` : `${n}명이 나눔`;
@@ -1088,9 +1088,9 @@
     }
     box.innerHTML = note + transfers.map((t) =>
       `<div class="settle-row">
-        <span class="from">${memberName(t.from)}</span>
+        <span class="from">${escapeHtml(memberName(t.from))}</span>
         <span class="arrow">→</span>
-        <span class="to">${memberName(t.to)}</span>
+        <span class="to">${escapeHtml(memberName(t.to))}</span>
         <span class="amt">${money(t.amount, "KRW")}</span>
       </div>`).join("");
   }
@@ -1122,7 +1122,7 @@
       ${tile}
       <span class="exp-mid">
         <span class="exp-title">${e.note ? escapeHtml(e.note) : (e.category || "지출")}</span>
-        <span class="exp-sub">${memberName(e.payer_id)} 냄 · ${parts.length}명${badge}${est}</span>
+        <span class="exp-sub">${escapeHtml(memberName(e.payer_id))} 냄 · ${parts.length}명${badge}${est}</span>
       </span>
       <span class="exp-amt-col">${amtCol}</span>`;
     item.onclick = () => openExpenseModal(e);

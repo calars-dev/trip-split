@@ -103,12 +103,30 @@ setTimeout(() => {
   const doc = w.document;
 
   console.log("\n[입력 화면] 일차·시간대 기본값");
-  check("현재 시각(8/3 19:30) 기준으로 채워짐", txt($("when-text")), "3일차 · 🌆저녁 8/3 (월)");
+  check("현재 시각(8/3 19:30) 기준으로 채워짐", txt($("when-text")), "3일차 · 🌆저녁 19시 8/3 (월)");
   check("일차 칩은 준비 + 1~4일차 (오늘 3일차 +1)",
     [...$("day-chips").children].map((b) => b.textContent),
     ["🎒 준비", "1일차", "2일차", "3일차", "4일차"]);
   check("시간대 칩 5개", [...$("slot-chips").children].map((b) => b.textContent),
     ["🌅 아침", "🍜 점심", "☀️ 오후", "🌆 저녁", "🌙 밤"]);
+  // 시각 칩은 고른 시간대에 속한 것만 — 24개를 다 깔면 저장 버튼이 화면 밖으로 밀린다
+  check("저녁 시각 칩은 17~20시", [...$("hour-chips").children].map((b) => b.textContent),
+    ["17시", "18시", "19시", "20시"]);
+  check("지금 시각이 골라져 있음",
+    [...$("hour-chips").children].filter((b) => b.className.includes("sel")).map((b) => b.textContent),
+    ["19시"]);
+
+  // 시간대를 바꾸면 시각도 그 안으로 따라온다 — "저녁 14시"가 생길 수 없다
+  [...$("slot-chips").children][0].click(); // 아침
+  check("아침으로 바꾸면 시각도 아침 범위로", txt($("when-text")), "3일차 · 🌅아침 5시 8/3 (월)");
+  check("아침 시각 칩은 5~9시", [...$("hour-chips").children].map((b) => b.textContent),
+    ["5시", "6시", "7시", "8시", "9시"]);
+
+  // 반대 방향도 성립한다
+  [...$("hour-chips").children][4].click(); // 9시
+  check("9시는 아침 그대로", txt($("when-text")), "3일차 · 🌅아침 9시 8/3 (월)");
+  [...$("slot-chips").children][3].click(); // 저녁으로 되돌림
+  [...$("hour-chips").children][2].click(); // 19시
 
   console.log("\n[현황 화면] 시작일");
   check("시작일 표시", txt($("startdate-text")), "여행 시작 8월 1일 (토)");

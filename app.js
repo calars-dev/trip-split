@@ -55,11 +55,43 @@
   const CATEGORIES = [
     { key: "식비", emoji: "🍚" }, { key: "카페", emoji: "☕" },
     { key: "교통", emoji: "🚕" }, { key: "숙소", emoji: "🏠" },
-    { key: "선물", emoji: "🎁" }, { key: "마트", emoji: "🛒" },
-    { key: "술",   emoji: "🍺" }, { key: "기타", emoji: "➕" },
+    { key: "투어", emoji: "🤿" }, { key: "렌터카", emoji: "🚗" },
+    { key: "입장료", emoji: "🎟" }, { key: "선물", emoji: "🎁" },
+    { key: "마트", emoji: "🛒" }, { key: "술",   emoji: "🍺" },
+    { key: "기타", emoji: "➕" },
   ];
   const EMOJI = Object.fromEntries(CATEGORIES.map((c) => [c.key, c.emoji]));
   const CUR = { KRW: "₩", JPY: "¥" };
+
+  // A ledger member — the shared pot — is a column in the books, not a person.
+  // It pays for things, but it never takes a share of them and nobody can claim
+  // it as their identity. Absent the migration the flag is undefined, i.e. false,
+  // and everything behaves as it did before.
+  const isLedger = (m) => !!(m && m.is_ledger);
+  // 받침이 있으면 "이", 없으면 "가". "공금가 냄"을 없앤다.
+  function particle(word) {
+    const s = String(word || "");
+    const c = s.charCodeAt(s.length - 1);
+    if (!(c >= 0xac00 && c <= 0xd7a3)) return "가";
+    return ((c - 0xac00) % 28) ? "이" : "가";
+  }
+  const realPeople = () => state.members.filter((m) => !isLedger(m));
+  // Paying money *into* the pot — the trip fee everyone hands over up front.
+  // It needs no column of its own: an expense whose only recipient is the pot
+  // can be nothing else.
+  function isDeposit(e) {
+    // Only an explicit single recipient counts. Falling back to the payer would
+    // read a pot-paid expense with no participants as money coming *in*, and it
+    // would then vanish from every spending total.
+    const parts = e.participant_ids;
+    if (!parts || parts.length !== 1) return false;
+    if (parts[0] === e.payer_id) return false;
+    return isLedger(state.members.find((m) => m.id === parts[0]));
+  }
+
+  // Above this, a yen figure is often a won figure that was typed with the wrong
+  // toggle — and that error multiplies the shared cost, so the save stops to ask.
+  const BIG_JPY = 10000;
 
   // ── day / slot ──
   // An expense carries the day of the trip it belongs to, not a calendar date:
@@ -104,12 +136,16 @@
     return q;
   }
   const isMissingReceiptCol = (err) => !!err && /receipt_path/.test(err.message || "");
+  // And the clock column (migration-pot.sql).
+  let hourColMissing = false;
+  const isMissingHourCol = (err) => !!err && /\bhour\b/.test(err.message || "");
   // Drop whatever this particular database turned out not to have.
   function sanitize(p) {
     let q = p;
     if (rateColsMissing) q = stripRateCols(q);
     if (timelineColsMissing) q = stripTimelineCols(q);
     if (receiptColMissing) { q = Object.assign({}, q); delete q.receipt_path; }
+    if (hourColMissing) { q = Object.assign({}, q); delete q.hour; }
     return q;
   }
 
@@ -145,6 +181,7 @@
     $(id).classList.add("active");
     window.scrollTo(0, 0);
     renderInstallHint(id);
+    if (id === "screen-input") refreshDraftClock();
   }
 
   // ── "홈 화면에 추가" ──
@@ -497,22 +534,33 @@
   }
 
   // which day of the trip is it right now? day 1 until a start date exists
+  // A night out that runs past midnight is still that night. The trip day turns
+  // over at 6am, not at 00:00, so a 2시 bar tab lands on the day it started.
+  const DAY_CUTOFF_HOUR = 6;
   function todayDayIndex() {
     const s = startDate();
     if (!s) return 1;
     const now = new Date();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    if (now.getHours() < DAY_CUTOFF_HOUR) today.setDate(today.getDate() - 1);
     const diff = Math.round((today - s) / 86400000) + 1;
     return diff < 1 ? PREP_DAY : Math.min(diff, MAX_DAY_CHIPS);
   }
-  function slotNow() {
-    const h = new Date().getHours();
+  function slotOfHour(h) {
     if (h >= 5 && h < 10) return "아침";
     if (h >= 10 && h < 14) return "점심";
     if (h >= 14 && h < 17) return "오후";
     if (h >= 17 && h < 21) return "저녁";
     return "밤";
   }
+  // Only the hours that belong to the chosen slot are offered. Twenty-four chips
+  // pushed the save button off a phone screen, and they let "저녁 14시" exist.
+  const SLOT_HOURS = {
+    "아침": [5, 6, 7, 8, 9], "점심": [10, 11, 12, 13], "오후": [14, 15, 16],
+    "저녁": [17, 18, 19, 20], "밤": [21, 22, 23, 0, 1, 2, 3, 4],
+  };
+  function slotNow() { return slotOfHour(new Date().getHours()); }
+  const hourOf = (e) => (typeof e.hour === "number" ? e.hour : null);
   // how far the day picker runs: today, or the latest day already logged
   function lastDayIndex() {
     let max = 1;
@@ -527,12 +575,15 @@
     });
     return max + 1;
   }
-  // rows sharing a bucket, in display order
-  function bucketSiblings(e) {
-    return state.expenses
-      .filter((x) => dayOf(x) === dayOf(e) && slotKeyOf(x) === slotKeyOf(e))
-      .sort((a, b) => (a.seq || 0) - (b.seq || 0) || (new Date(a.created_at) - new Date(b.created_at)));
-  }
+  // Small hours belong to the end of the night they started, not the front of
+  // the morning: 밤 runs 21시 → 23시 → 0시 → 2시, so 2시 must rank after 23시.
+  const clockRank = (h) => (h === null ? 99 : (h < 5 ? h + 24 : h));
+  // The clock decides the order — there is nothing to drag and nothing to
+  // renumber. Two rows on the same hour fall back to when they were entered.
+  const byClock = (a, b) =>
+    clockRank(hourOf(a)) - clockRank(hourOf(b))
+    || (a.seq || 0) - (b.seq || 0)
+    || (new Date(a.created_at) - new Date(b.created_at));
   // one member's share of an expense in KRW — same rounding rule as computeSettlement,
   // so the filter total and the settlement figure never disagree by a won or two
   function shareOf(e, memberId) {
@@ -667,8 +718,11 @@
       currency: state.room.default_currency || "KRW",
       category: null,
       note: "",
-      payerId: state.me,
-      participants: new Set(state.members.map((m) => m.id)),
+      // Where a pot exists it pays for nearly everything, so it is the default
+      // and the rare personal expense is the one that costs a tap.
+      payerId: (state.members.find(isLedger) || { id: state.me }).id,
+      // the pot never takes a share of what it pays for
+      participants: new Set(realPeople().map((m) => m.id)),
       editingId: null,
       // rate carried over when editing, so a later edit doesn't re-price the expense
       rateKrw: null,
@@ -677,6 +731,10 @@
       // when it was spent — prefilled from the clock, changeable by tapping
       dayIndex: todayDayIndex(),
       slot: slotNow(),
+      hour: new Date().getHours(),
+      // Until someone picks a time themselves, the clock keeps the draft current
+      // — an app left open since lunch must not stamp lunch on a dinner receipt.
+      whenTouched: false,
       seq: null,
       origDayIndex: null,
       origSlot: null,
@@ -763,24 +821,52 @@
     // "여행 전 준비" has no time of day — nobody remembers when they booked a flight
     const isPrep = d.dayIndex === PREP_DAY;
     $("slot-wrap").style.display = isPrep ? "none" : "block";
+    const hourTxt = (!isPrep && typeof d.hour === "number") ? ` ${d.hour}시` : "";
     $("when-text").innerHTML = `<b>${dayLabel(d.dayIndex)}</b>`
-      + (isPrep ? "" : ` · ${SLOT_EMOJI[d.slot] || ""}${d.slot}`
+      + (isPrep ? "" : ` · ${SLOT_EMOJI[d.slot] || ""}${d.slot}${hourTxt}`
                      + ` <span style="color:var(--faint)">${dayDateLabel(d.dayIndex)}</span>`);
 
     const dc = $("day-chips"); dc.innerHTML = "";
     dc.appendChild(chip("🎒 준비", d.dayIndex === PREP_DAY,
-      () => { d.dayIndex = PREP_DAY; renderWhen(); }));
+      () => { d.dayIndex = PREP_DAY; d.whenTouched = true; renderWhen(); }));
     // one day past the furthest we know about, so tomorrow can be logged in advance
     for (let i = 1; i <= Math.min(lastDayIndex() + 1, MAX_DAY_CHIPS); i++) {
       dc.appendChild(chip(i + "일차", d.dayIndex === i,
-        ((n) => () => { d.dayIndex = n; renderWhen(); })(i)));
+        ((n) => () => { d.dayIndex = n; d.whenTouched = true; renderWhen(); })(i)));
     }
 
     const sc = $("slot-chips"); sc.innerHTML = "";
     SLOTS.forEach((s) => {
-      sc.appendChild(chip(s.emoji + " " + s.key, d.slot === s.key,
-        () => { d.slot = s.key; renderWhen(); }));
+      sc.appendChild(chip(s.emoji + " " + s.key, d.slot === s.key, () => {
+        d.slot = s.key;
+        // Moving the slot moves the hour with it, or the row would claim to be
+        // "저녁 14시". Staying put when the hour already fits keeps a correction
+        // to the slot from throwing away a time the user chose on purpose.
+        const hours = SLOT_HOURS[s.key] || [];
+        if (hours.indexOf(d.hour) < 0) d.hour = hours[0];
+        d.whenTouched = true;
+        renderWhen();
+      }));
     });
+
+    const hc = $("hour-chips"); hc.innerHTML = "";
+    (SLOT_HOURS[d.slot] || []).forEach((h) => {
+      hc.appendChild(chip(h + "시", d.hour === h,
+        ((n) => () => { d.hour = n; d.slot = slotOfHour(n); d.whenTouched = true; renderWhen(); })(h)));
+    });
+  }
+
+  // Re-read the clock for a draft nobody has dated by hand. Called when the
+  // input screen comes up and when the app returns to the foreground, which is
+  // where a stale default would otherwise be saved without anyone noticing.
+  function refreshDraftClock() {
+    const d = state.draft;
+    if (!d || d.editingId || d.whenTouched) return;
+    const now = new Date();
+    d.dayIndex = todayDayIndex();
+    d.slot = slotNow();
+    d.hour = now.getHours();
+    renderWhen();
   }
 
   function renderWho() {
@@ -791,11 +877,17 @@
     $("amt-sym").textContent = CUR[d.currency];
     renderAmountPreview();
     // who summary
-    const payer = escapeHtml(memberName(d.payerId));
+    const payerName = memberName(d.payerId);
+    const payer = escapeHtml(payerName);
     const n = d.participants.size;
-    const allN = state.members.length;
-    const splitTxt = n === allN ? `${n}명이 나눔` : `${n}명이 나눔`;
-    $("who-text").innerHTML = `<b>${payer}</b>가 냄 · ${splitTxt}`;
+    const potM = state.members.find(isLedger);
+    const depositOn = !!potM && n === 1 && d.participants.has(potM.id);
+    // "전원" means every real person; the pot is not one of them. Saying it in
+    // words rather than a headcount is what makes a stray selection visible.
+    const splitTxt = n === realPeople().length ? "전원 나눔" : `${n}명이 나눔`;
+    $("who-text").innerHTML = depositOn
+      ? `<b>${payer}</b>${particle(payerName)} <b>${escapeHtml(potM.name)}</b>에 입금`
+      : `<b>${payer}</b>${particle(payerName)} 냄 · ${splitTxt}`;
     // payer chips
     const pc = $("payer-chips"); pc.innerHTML = "";
     state.members.forEach((m) => {
@@ -805,9 +897,32 @@
       b.onclick = () => { d.payerId = m.id; renderWho(); };
       pc.appendChild(b);
     });
-    // split chips
+    // Paying *into* the pot is the one case where the pot is the recipient, and
+    // the split chips deliberately hide it. Without this toggle there is no way
+    // to record a trip fee from inside the app at all.
+    const dep = $("deposit-row");
+    if (potM) {
+      dep.innerHTML = "";
+      dep.appendChild(chip("💰 " + potM.name + "에 입금", depositOn, () => {
+        if (depositOn) {
+          d.participants = new Set(realPeople().map((m) => m.id));
+        } else {
+          d.participants = new Set([potM.id]);
+          // The pot cannot hand money to itself; that row would count as neither
+          // a deposit nor an expense and the money would vanish from every total.
+          if (isLedger(state.members.find((m) => m.id === d.payerId))) d.payerId = state.me;
+        }
+        renderWho();
+      }));
+      $("split-wrap").style.display = depositOn ? "none" : "block";
+    } else {
+      dep.innerHTML = "";
+      $("split-wrap").style.display = "block";
+    }
+    // split chips — the pot is not offered here at all, so it cannot creep into
+    // a split by a stray tap
     const sc = $("split-chips"); sc.innerHTML = "";
-    state.members.forEach((m) => {
+    realPeople().forEach((m) => {
       const b = document.createElement("button");
       b.className = "chip" + (d.participants.has(m.id) ? " sel" : "");
       b.textContent = m.name;
@@ -822,16 +937,31 @@
 
   function renderStatus() {
     if (!state.room) return;
-    // hero: total + avg, all in KRW
-    const total = state.expenses.reduce((sum, e) => sum + krwAmount(e), 0);
+    const pot = state.members.find(isLedger);
+    // Money handed to the pot is not money spent. Counting it would double the
+    // headline: once when everyone pays in, again when the pot pays out.
+    // `settled` rows are already out of computeSettlement, so counting them here
+    // would let the two halves of this screen disagree.
+    const spent = state.expenses.filter((e) => !isDeposit(e) && !e.settled);
+    const total = spent.reduce((sum, e) => sum + krwAmount(e), 0);
     const hero = $("stat-hero");
-    const memberCount = state.members.length || 1;
+    const headCount = state.members.length || 1;
     if (state.expenses.length === 0) {
       hero.innerHTML = `<div class="total">${money(0, "KRW")}</div>
         <div class="avg">아직 지출이 없어요</div>`;
+    } else if (pot) {
+      // With a pot, the question on everyone's mind is what is left in it, so
+      // that is the number in the big type; the spend sits underneath.
+      const { balances } = computeSettlement();
+      const left = -Math.round(balances[pot.id] || 0);
+      const low = left <= 0;
+      const per = realPeople().length || 1;
+      hero.innerHTML = `<div class="avg" style="margin-bottom:2px">${escapeHtml(pot.name)} 남은 돈</div>
+        <div class="total"${low ? ` style="color:var(--neg)"` : ""}>${money(left, "KRW")}</div>
+        <div class="avg">쓴 돈 ${money(total, "KRW")} · 1인 ${money(left / per, "KRW")}씩 돌려받기</div>`;
     } else {
       hero.innerHTML = `<div class="total">${money(total, "KRW")}</div>
-        <div class="avg">1인 평균 ${money(total / memberCount, "KRW")}</div>`;
+        <div class="avg">1인 평균 ${money(total / headCount, "KRW")}</div>`;
     }
 
     // balances
@@ -839,20 +969,45 @@
     const box = $("balances");
     box.innerHTML = "";
     if (state.members.length === 0) { box.innerHTML = `<div class="empty">멤버가 없어요</div>`; }
-    state.members.forEach((m) => {
+    // People first, the pot last and set apart. Its raw balance is the negative
+    // of what it holds, and printing −₩2,812,213 directly under a headline that
+    // says +₩2,812,213 makes one number look like two.
+    const ordered = pot ? realPeople().concat([pot]) : state.members;
+    ordered.forEach((m) => {
       const row = document.createElement("div");
-      row.className = "bal-row tappable";
+      const led = isLedger(m);
+      row.className = "bal-row tappable" + (led ? " ledger" : "");
       const v = Math.round(balances[m.id] || 0);
       const meTag = m.id === state.me ? `<span class="me-tag">나</span>` : "";
-      const amtHtml = v === 0
-        ? `<span class="bal-amt zero">±0</span>`
-        : `<span class="bal-amt ${v > 0 ? "pos" : "neg"}">${v > 0 ? "+" : "−"}${money(Math.abs(v), "KRW")}</span>`;
-      row.innerHTML = `<span class="bal-name">${escapeHtml(m.name)}${meTag}</span><span>${amtHtml}</span>`;
+      const amtHtml = led
+        ? `<span class="bal-amt">${money(-v, "KRW")}</span>`
+        : (v === 0
+          ? `<span class="bal-amt zero">±0</span>`
+          : `<span class="bal-amt ${v > 0 ? "pos" : "neg"}">${v > 0 ? "+" : "−"}${money(Math.abs(v), "KRW")}</span>`);
+      const label = led
+        ? `${escapeHtml(m.name)} <span class="bal-note">남은 돈</span>`
+        : `${escapeHtml(m.name)}${meTag}`;
+      row.innerHTML = `<span class="bal-name">${label}</span><span>${amtHtml}</span>`;
       row.onclick = () => openTimeline(m.id);
       box.appendChild(row);
     });
 
-    // expense list on status (tap to mark on-the-spot settled)
+    // Anything saved through the offline escape hatch is listed here until the
+    // photo catches up, so a missing receipt is a visible debt rather than a
+    // thing nobody remembers.
+    // Every other column announces itself when it is missing. Without this one
+    // the pot silently becomes a fifteenth person and every bill is divided by
+    // one more head than there are people — wrong numbers, no error.
+    $("pot-notice").innerHTML =
+      (state.members.length && !("is_ledger" in state.members[0]))
+        ? `<div class="tl-notice">⚠️ 공금 칸을 쓸 준비가 안 됐어요 —
+           <b>migration-pot.sql</b>을 한 번 실행해 주세요.
+           그때까지 공금이 사람 한 명으로 계산돼요.</div>`
+        : "";
+    const noShot = receiptColMissing ? 0 : state.expenses.filter((e) => !e.receipt_path).length;
+    $("receipt-todo").innerHTML = noShot
+      ? `<div class="tl-notice">📷 영수증이 없는 지출 <b>${noShot}건</b> — 지출을 탭해 붙일 수 있어요.</div>`
+      : "";
     renderExpenseList($("status-exp-list"), state.expenses, "아직 지출이 없어요.");
     renderMembers();
     renderStartDate();
@@ -1039,7 +1194,8 @@
       } else {
         right = "";
       }
-      row.innerHTML = `<span class="mem-name">${escapeHtml(m.name)}${meTag}</span>`;
+      const ledTag = isLedger(m) ? `<span class="mem-tag">장부용</span>` : "";
+      row.innerHTML = `<span class="mem-name">${escapeHtml(m.name)}${meTag}${ledTag}</span>`;
       if (right) {
         row.insertAdjacentHTML("beforeend", right);
       } else {
@@ -1052,6 +1208,9 @@
       }
       box.appendChild(row);
     });
+    // Offered only while the room has no pot: a second one would split the
+    // balance in two and only the first would ever be shown.
+    $("pot-add").style.display = state.members.some(isLedger) ? "none" : "block";
   }
 
   async function addMember() {
@@ -1063,6 +1222,35 @@
     $("member-new").value = "";
     toast(name + " 추가됨");
     await refetch();
+  }
+
+  // 회비를 미리 걷어 한 지갑에서 쓰는 여행을 위한 칸. 사람이 아니라 장부의 한 줄이라
+  // 결제자로만 고를 수 있고, 나눔 대상과 이름 고르기 목록에는 나오지 않는다.
+  async function addPot() {
+    if (state.members.some(isLedger)) { toast("이미 있어요", true); return; }
+    const name = ($("member-new").value.trim() || "공금");
+    if (state.members.some((m) => m.name === name)) { toast("같은 이름이 이미 있어요", true); return; }
+    openConfirm("공금 칸을 만들까요?",
+      `<b>${escapeHtml(name)}</b> 칸이 생겨요.<br>사람이 아니라 장부용이라 아무도 이 이름을 가져갈 수 없어요.
+       <br><br>회비로 걷은 돈을 여기 넣어두고, 다 같이 쓰는 것은 이 이름으로 결제하면 돼요.`,
+      async () => {
+        const { data, error } = await sb.from("members")
+          .insert({ room_id: state.room.id, name, is_ledger: true }).select().single();
+        if (error) {
+          // 컬럼이 없으면 사람으로 들어가 조용히 15번째 참가자가 된다 — 만들지 않는 편이 낫다.
+          if (/is_ledger/.test(error.message || "")) toast("migration-pot.sql 먼저 실행해 주세요", true);
+          else toast("만들기 실패: " + error.message, true);
+          return;
+        }
+        if (data && !data.is_ledger) {
+          await sb.from("members").delete().eq("id", data.id);
+          toast("migration-pot.sql 먼저 실행해 주세요", true);
+          return;
+        }
+        $("member-new").value = "";
+        toast(name + " 칸이 생겼어요");
+        await refetch();
+      });
   }
 
   async function deleteMember(m) {
@@ -1103,7 +1291,9 @@
     item.className = "exp-item" + (e.settled ? " settled" : "");
     item.style.width = "100%";
     item.style.textAlign = "left";
-    const badge = e.settled ? ` · <span class="exp-badge">✓정산완료</span>` : "";
+    const badge = (e.settled ? ` · <span class="exp-badge">✓정산완료</span>` : "")
+      + (isDeposit(e) ? ` · <span class="exp-badge">입금</span>` : "")
+      + ((!e.receipt_path && !receiptColMissing) ? ` · <span class="exp-badge todo">영수증 없음</span>` : "");
     const est = isEstimated(e) ? ` · <span class="exp-est">⚡기준환율</span>` : "";
     // foreign currency keeps its original amount up front, with the KRW value underneath
     const krwLine = cur === "KRW" ? "" : `<span class="exp-krw">≈${money(krwAmount(e), "KRW")}</span>`;
@@ -1122,7 +1312,7 @@
       ${tile}
       <span class="exp-mid">
         <span class="exp-title">${e.note ? escapeHtml(e.note) : (e.category || "지출")}</span>
-        <span class="exp-sub">${escapeHtml(memberName(e.payer_id))} 냄 · ${parts.length}명${badge}${est}</span>
+        <span class="exp-sub">${hourOf(e) === null ? "" : hourOf(e) + "시 · "}${escapeHtml(memberName(e.payer_id))} 냄 · ${parts.length}명${badge}${est}</span>
       </span>
       <span class="exp-amt-col">${amtCol}</span>`;
     item.onclick = () => openExpenseModal(e);
@@ -1190,14 +1380,15 @@
       if (!slots.has(s)) slots.set(s, []);
       slots.get(s).push(e);
     });
-    const byOrder = (a, b) =>
-      (a.seq || 0) - (b.seq || 0) || (new Date(a.created_at) - new Date(b.created_at));
     const out = [];
     days.forEach((slots, dayIndex) => {
       const list = [];
-      slots.forEach((arr, slot) => list.push({ slot, items: arr.sort(byOrder) }));
+      slots.forEach((arr, slot) => list.push({ slot, items: arr.sort(byClock) }));
       list.sort((a, b) => slotRank(a.slot) - slotRank(b.slot));
-      const total = list.reduce((sum, g) => sum + g.items.reduce((t, e) => t + rowKrw(e), 0), 0);
+      // Deposits sit in the list but not in the total: a day bar is about how
+      // much went out, and 7,000,000원 of trip fees would dwarf every real day.
+      const total = list.reduce((sum, g) =>
+        sum + g.items.reduce((t, e) => t + (isDeposit(e) ? 0 : rowKrw(e)), 0), 0);
       out.push({ dayIndex, slots: list, total });
     });
     out.sort((a, b) => dayRank(a.dayIndex) - dayRank(b.dayIndex));
@@ -1223,7 +1414,9 @@
     const wrap = $("tl-modes-wrap");
     if (!f.memberId) { wrap.innerHTML = ""; return; }
     const items = filteredExpenses();
-    const total = items.reduce((s, e) => s + rowKrw(e), 0);
+    // Same rule as the day totals: paying into the pot is not spending. Without
+    // this the header said ₩500,000 above a day total of ₩0.
+    const total = items.reduce((s, e) => s + (isDeposit(e) ? 0 : rowKrw(e)), 0);
     wrap.innerHTML = `
       <div class="tl-modes">
         <button data-mode="paid" class="${f.mode === "paid" ? "on" : ""}">낸 것</button>
@@ -1236,63 +1429,17 @@
     });
   }
 
-  // Empty slots and empty days are hidden normally — blank rows only make the
-  // page longer. While dragging they have to exist, or there is nowhere to drop.
-  const SLOT_KEYS = SLOTS.map((s) => s.key);
-  const MAX_VACANT_DAYS = 14;
-  function addDropTargets(days) {
-    const have = {};
-    days.forEach((d) => { have[d.dayIndex] = d; });
-    const last = lastDayIndex();
-    if (last <= MAX_VACANT_DAYS) {
-      for (let i = 0; i <= last; i++) {
-        if (!have[i]) { have[i] = { dayIndex: i, slots: [], total: 0, vacant: true }; days.push(have[i]); }
-      }
-    }
-    if (!have[PREP_DAY]) {
-      have[PREP_DAY] = { dayIndex: PREP_DAY, slots: [], total: 0, vacant: true };
-      days.push(have[PREP_DAY]);
-    }
-    days.forEach((d) => {
-      if (d.dayIndex === null) return;
-      if (d.dayIndex === PREP_DAY) {
-        if (!d.slots.length) d.slots = [{ slot: null, items: [] }];
-        return;
-      }
-      const bySlot = {};
-      d.slots.forEach((g) => { bySlot[g.slot] = g; });
-      d.slots = SLOT_KEYS.map((k) => bySlot[k] || { slot: k, items: [] });
-    });
-    days.sort((a, b) => dayRank(a.dayIndex) - dayRank(b.dayIndex));
-  }
-
-  // one timeline row: the expense itself plus the grip that drags it
+  // one timeline row — order comes from the clock, so there is nothing to grab
   function timelineRow(e, share) {
     const row = document.createElement("div");
     row.className = "tl-row";
     row.dataset.id = e.id;
     row.appendChild(expenseItem(e, share));
-    const grip = document.createElement("button");
-    grip.className = "tl-grip";
-    grip.textContent = "⋮⋮";
-    grip.title = "끌어서 옮기기";
-    grip.onclick = (ev) => ev.preventDefault();
-    grip.addEventListener("pointerdown", (ev) => beginDrag(ev, e.id));
-    row.appendChild(grip);
     return row;
   }
 
-  function dropZone(dayIndex, slot) {
-    const z = document.createElement("div");
-    z.className = "tl-rows";
-    z.dataset.day = String(dayIndex);
-    z.dataset.slot = slot || "";
-    return z;
-  }
-
-  function renderTimeline(expand) {
+  function renderTimeline() {
     if (!state.room) return;
-    if (dragging && !expand) return; // never rebuild the list out from under a drag
     renderFilters();
     $("tl-notice").innerHTML = timelineColsMissing
       ? `<div class="tl-notice">⚠️ 일차·시간대를 저장할 칸이 아직 없어요 —
@@ -1309,13 +1456,12 @@
     }
 
     const days = groupByDay(items);
-    if (expand) addDropTargets(days);
     const peak = Math.max.apply(null, days.map((d) => d.total).concat([1]));
     const shareMode = state.filter.memberId && state.filter.mode === "share";
     box.innerHTML = "";
     days.forEach((day) => {
       const wrap = document.createElement("div");
-      wrap.className = "tl-day" + (day.vacant ? " vacant" : "");
+      wrap.className = "tl-day";
       const name = day.dayIndex === null ? "❓ 미지정"
         : (day.dayIndex === PREP_DAY ? "🎒 여행 전 준비" : day.dayIndex + "일차");
       const date = (day.dayIndex === null || day.dayIndex === PREP_DAY) ? "" : dayDateLabel(day.dayIndex);
@@ -1336,7 +1482,8 @@
       const row = (e) => timelineRow(e, shareMode ? shareOf(e, state.filter.memberId) : undefined);
       if (day.dayIndex === PREP_DAY) {
         // prep spending has no time of day, so no spine — just the list
-        const zone = dropZone(PREP_DAY, null);
+        const zone = document.createElement("div");
+        zone.className = "tl-rows";
         day.slots.forEach((g) => g.items.forEach((e) => zone.appendChild(row(e))));
         wrap.appendChild(zone);
       } else {
@@ -1344,10 +1491,11 @@
         body.className = "tl-body";
         day.slots.forEach((g) => {
           const sl = document.createElement("div");
-          sl.className = "tl-slot" + (g.items.length ? "" : " vacant");
+          sl.className = "tl-slot";
           sl.innerHTML = `<span class="tl-dot">${SLOT_EMOJI[g.slot] || "❓"}</span>
             <div class="tl-slot-name">${g.slot || "미지정"}</div>`;
-          const zone = dropZone(day.dayIndex, g.slot);
+          const zone = document.createElement("div");
+          zone.className = "tl-rows";
           g.items.forEach((e) => zone.appendChild(row(e)));
           sl.appendChild(zone);
           body.appendChild(sl);
@@ -1362,277 +1510,6 @@
     return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   }
 
-  // ═══════════════════ DRAG ═══════════════════
-  // Grab the ⋮⋮ grip and drop the expense into any slot on any day. The row
-  // itself stays in the list as the placeholder while a clone follows the
-  // finger, so the surrounding rows reflow exactly where it will land.
-  let dragging = null;
-  let arming = null;
-
-  // Re-render without the list sliding around: whatever the page height does,
-  // this one row keeps the same spot on screen.
-  function keepRowInPlace(id, render) {
-    const sel = '.tl-row[data-id="' + id + '"]';
-    const el = document.querySelector(sel);
-    const before = el ? el.getBoundingClientRect().top : null;
-    render();
-    if (before === null) return;
-    const after = document.querySelector(sel);
-    if (after) window.scrollBy(0, after.getBoundingClientRect().top - before);
-  }
-
-  const HOLD_MS = 320;   // how long a finger must sit still before it drags
-  const SLIP_PX = 8;     // travel that means "this was a scroll, not a grab"
-
-  // A thumb scrolling the list lands right on the grip. Touch therefore has to
-  // hold still to start a drag — any travel means scroll, and the page keeps
-  // scrolling normally (the grip is pan-y). A mouse has no such ambiguity.
-  function beginDrag(ev, id) {
-    if (dragging || arming) return;
-    if (ev.button > 0) return;
-    const grip = ev.currentTarget;
-    if (ev.pointerType === "mouse") {
-      ev.preventDefault();
-      startDrag(id, ev.clientY, ev.pointerId);
-      return;
-    }
-    arming = { id: id, grip: grip, startY: ev.clientY, lastY: ev.clientY,
-               panY: ev.clientY, mode: "hold", pointerId: ev.pointerId };
-    arming.onMove = (e) => {
-      const a = arming;
-      if (!a) return;
-      if (a.mode === "hold") {
-        if (Math.abs(e.clientY - a.startY) <= SLIP_PX) { a.lastY = e.clientY; return; }
-        // Travelled: this is a swipe, not a grab. The grip is touch-action:none
-        // so the browser will not scroll for us — do it by hand, matching the
-        // finger, so the right edge of the list doesn't become a dead strip.
-        a.mode = "pan";
-        clearTimeout(a.timer);
-        a.grip.classList.remove("arming");
-        a.panY = a.startY; // count the travel so far, or the swipe starts late
-      }
-      window.scrollBy(0, a.panY - e.clientY);
-      a.panY = e.clientY;
-    };
-    arming.onOff = () => disarm();
-    // on document, not the grip: the finger slides off it, and after the drag
-    // starts the grip element is replaced anyway
-    document.addEventListener("pointermove", arming.onMove);
-    document.addEventListener("pointerup", arming.onOff);
-    document.addEventListener("pointercancel", arming.onOff);
-    grip.classList.add("arming");
-    arming.timer = setTimeout(() => {
-      const a = arming;
-      disarm();
-      if (navigator.vibrate) navigator.vibrate(12);
-      startDrag(a.id, a.lastY, a.pointerId);
-    }, HOLD_MS);
-  }
-
-  function disarm() {
-    const a = arming;
-    if (!a) return;
-    arming = null;
-    clearTimeout(a.timer);
-    a.grip.classList.remove("arming");
-    document.removeEventListener("pointermove", a.onMove);
-    document.removeEventListener("pointerup", a.onOff);
-    document.removeEventListener("pointercancel", a.onOff);
-  }
-
-  function startDrag(id, clientY, pointerId) {
-    if (dragging) return;
-    const first = document.querySelector('.tl-row[data-id="' + id + '"]');
-    if (!first) return;
-
-    // Open up every slot and day as a drop target. That adds a lot of height,
-    // so hold this row still on screen or the list jumps out from under the
-    // finger before the drag has even started.
-    keepRowInPlace(id, () => renderTimeline(true));
-    const row = document.querySelector('.tl-row[data-id="' + id + '"]');
-    if (!row) return;
-
-    // The re-render replaced every row, so the grip that was pressed is now
-    // detached and will never see another pointer event. Bind to the new one.
-    const grip = row.querySelector(".tl-grip");
-    if (!grip) return;
-
-    const r = row.getBoundingClientRect();
-    // The page can't always scroll far enough to keep the row exactly under the
-    // finger (near the bottom it runs out), so pin the grab point inside the row
-    // — otherwise the clone floats off at an angle nowhere near the finger.
-    const grab = Math.max(0, Math.min(clientY - r.top, r.height));
-    const e = state.expenses.find((x) => x.id === id);
-    const float = document.createElement("div");
-    float.className = "tl-float";
-    float.style.width = r.width + "px";
-    float.appendChild(expenseItem(e));
-    document.body.appendChild(float);
-
-    dragging = { id: id, row: row, float: float, grip: grip,
-                 left: r.left, grabY: grab, lastY: clientY, raf: 0,
-                 // where it started, so an interrupted drag can put it back
-                 homeZone: row.parentElement, homeNext: row.nextElementSibling };
-    row.classList.add("placeholder");
-    document.body.classList.add("dragging");
-    followFinger();
-
-    // Deliberately NO setPointerCapture. The captured element would be the grip,
-    // which lives inside the row we re-parent on every move — and moving a
-    // capturing element releases the capture and fires pointercancel, so the
-    // drag died on the first finger movement. Listening on document needs no
-    // capture anyway.
-    document.addEventListener("pointermove", onDragMove);
-    document.addEventListener("pointerup", endDrag);
-    // A cancel is not a drop: put the row back rather than filing it somewhere
-    // the user never chose.
-    document.addEventListener("pointercancel", cancelDrag);
-    window.addEventListener("blur", cancelDrag);
-    document.addEventListener("visibilitychange", cancelDrag);
-    dragging.raf = requestAnimationFrame(dragTick);
-  }
-
-  function followFinger() {
-    const d = dragging;
-    d.float.style.transform = "translate(" + d.left + "px," + (d.lastY - d.grabY) + "px)";
-  }
-
-  function onDragMove(ev) {
-    if (!dragging) return;
-    ev.preventDefault();
-    dragging.lastY = ev.clientY;
-    followFinger();
-    placeRow(ev.clientY); // on the event itself, not the frame loop — see dragTick
-  }
-
-  // Only job is the edge scroll: hold the finger near the top or bottom and the
-  // page keeps moving even though no pointermove events are arriving. Placement
-  // is driven by onDragMove instead, so a throttled or paused rAF (background
-  // tab, reduced motion) can never leave the placeholder stuck.
-  function dragTick() {
-    if (!dragging) return;
-    const pad = 90, h = window.innerHeight, y = dragging.lastY;
-    let by = 0;
-    if (y < pad) by = -Math.ceil((pad - y) / 8);
-    else if (y > h - pad) by = Math.ceil((y - (h - pad)) / 8);
-    if (by) { window.scrollBy(0, by); placeRow(y); followFinger(); }
-    dragging.raf = requestAnimationFrame(dragTick);
-  }
-
-  // Move the placeholder into whichever drop zone the finger is over. Zones can
-  // be a few pixels tall when empty, so fall back to the nearest one.
-  function placeRow(y) {
-    const zones = [].slice.call(document.querySelectorAll("#timeline .tl-rows"));
-    let best = null, bestGap = Infinity;
-    zones.forEach((z) => {
-      const r = z.getBoundingClientRect();
-      const gap = y < r.top ? r.top - y : (y > r.bottom ? y - r.bottom : 0);
-      if (gap < bestGap) { bestGap = gap; best = z; }
-    });
-    if (!best) return;
-    const rows = [].slice.call(best.children).filter((n) => n !== dragging.row);
-    let before = null;
-    for (let i = 0; i < rows.length; i++) {
-      const r = rows[i].getBoundingClientRect();
-      if (y < r.top + r.height / 2) { before = rows[i]; break; }
-    }
-    if (before) best.insertBefore(dragging.row, before);
-    else best.appendChild(dragging.row);
-  }
-
-  // tear down the drag and hand back the row so callers can decide what it means
-  function stopDrag() {
-    const d = dragging;
-    if (!d) return null;
-    dragging = null;
-    cancelAnimationFrame(d.raf);
-    document.removeEventListener("pointermove", onDragMove);
-    document.removeEventListener("pointerup", endDrag);
-    document.removeEventListener("pointercancel", cancelDrag);
-    window.removeEventListener("blur", cancelDrag);
-    document.removeEventListener("visibilitychange", cancelDrag);
-    d.float.remove();
-    d.row.classList.remove("placeholder");
-    document.body.classList.remove("dragging");
-    return d;
-  }
-
-  // the finger lifted — file the expense wherever the placeholder ended up
-  async function endDrag() {
-    const d = stopDrag();
-    if (!d) return;
-    const zone = d.row.parentElement;
-    if (!zone || !zone.classList.contains("tl-rows")) { renderTimeline(); return; }
-    const index = [].slice.call(zone.children).indexOf(d.row);
-    await commitDrag(d.id, Number(zone.dataset.day), zone.dataset.slot || null, index);
-  }
-
-  // the gesture was taken away (app switch, incoming call) — put it back
-  function cancelDrag() {
-    const d = stopDrag();
-    if (!d) return;
-    if (d.homeZone && d.homeZone.isConnected) d.homeZone.insertBefore(d.row, d.homeNext);
-    renderTimeline();
-  }
-
-  // Write the new arrangement: the target bucket is renumbered 0..n-1 with the
-  // expense inserted, and the bucket it left closes its gap.
-  async function commitDrag(id, day, slot, index) {
-    const moving = state.expenses.find((e) => e.id === id);
-    if (!moving) { renderTimeline(); return; }
-    const fromDay = dayOf(moving), fromSlot = slotKeyOf(moving);
-    const byOrder = (a, b) =>
-      (a.seq || 0) - (b.seq || 0) || (new Date(a.created_at) - new Date(b.created_at));
-    const inBucket = (e, dd, ss) => e.id !== id && dayOf(e) === dd && slotKeyOf(e) === ss;
-
-    const target = state.expenses.filter((e) => inBucket(e, day, slot)).sort(byOrder);
-    target.splice(Math.max(0, Math.min(index, target.length)), 0, moving);
-
-    const writes = [];
-    const local = []; // what to apply here, so the list settles before the network does
-    target.forEach((e, k) => {
-      const patch = {};
-      if (e.id === id) {
-        if (fromDay !== day) patch.day_index = day;
-        if (fromSlot !== slot) patch.slot = slot;
-      }
-      if (e.seq !== k) patch.seq = k;
-      if (Object.keys(patch).length) {
-        writes.push(sb.from("expenses").update(patch).eq("id", e.id));
-        local.push([e, patch]);
-      }
-    });
-    if (fromDay !== day || fromSlot !== slot) {
-      state.expenses.filter((e) => inBucket(e, fromDay, fromSlot)).sort(byOrder)
-        .forEach((e, k) => {
-          if (e.seq !== k) {
-            writes.push(sb.from("expenses").update({ seq: k }).eq("id", e.id));
-            local.push([e, { seq: k }]);
-          }
-        });
-    }
-    if (!writes.length) { keepRowInPlace(id, renderTimeline); return; }
-
-    // Collapse the expanded grid right away. Waiting for the round trip leaves
-    // every empty slot on screen — a long stretch of dashed boxes on a phone.
-    local.forEach((p) => Object.assign(p[0], p[1]));
-    keepRowInPlace(id, renderTimeline);
-
-    const bad = (await Promise.all(writes)).find((r) => r && r.error);
-    if (bad) {
-      if (isMissingTimelineCol(bad.error)) {
-        timelineColsMissing = true;
-        toast("migration-timeline.sql 먼저 실행해 주세요", true);
-      } else toast("이동 실패: " + bad.error.message, true);
-      await refetch();
-      return;
-    }
-    if (fromDay !== day || fromSlot !== slot) {
-      toast(`${dayLabel(day)}${slot ? " · " + slot : ""}(으)로 옮김`);
-    }
-    // No refetch: the local copy already matches what was just written, and
-    // re-rendering identical content would only shift the page again.
-  }
 
   // ═══════════════════ ACTIONS ═══════════════════
   function parseAmount() {
@@ -1651,16 +1528,34 @@
   }
 
   async function saveExpense() {
+    // The clock is deliberately NOT re-read here. 밤 spans midnight by design,
+    // so a 22시 entry saved at 00:05 would silently land on the next day while
+    // the screen still said 1일차. What the screen shows is what gets saved;
+    // the screen-entry and foreground hooks keep it fresh everywhere else.
     const d = state.draft;
     const amount = parseAmount();
     if (!amount || amount <= 0) { toast("금액을 입력하세요", true); return; }
     if (d.participants.size === 0) { toast("나눌 사람을 1명 이상 선택", true); return; }
     // New expenses must carry proof. Editing an older one that predates this
     // rule doesn't — otherwise the 49 already in there become uneditable.
+    // This gate comes BEFORE the currency question: it sends the user off to the
+    // photo picker and back, and asking first would ask twice.
     if (!d.editingId && !d.shot && !receiptColMissing) {
       toast("영수증이나 결제내역을 첨부해 주세요", true);
       $("receipt-file").click();
       return;
+    }
+    // Only one direction of the currency slip is worth stopping for. A won
+    // amount saved as yen inflates the expense roughly nine-fold and everyone
+    // carries the difference; yen saved as won only shrinks it, and that lands
+    // on whoever typed it. So the question is asked on the yen side.
+    if (!d.editingId) {
+      if (d.currency === "JPY" && amount >= BIG_JPY) {
+        const krw = Math.round(amount * currentJpyRate().rate);
+        if (!confirm(`¥${fmt(amount)} — 약 ${fmt(krw)}원으로 잡혀요.\n엔이 맞나요? 원화 금액이라면 위에서 ₩ 원으로 바꿔주세요.`)) {
+          toast("저장하지 않았어요 — 통화를 확인해 주세요", true); return;
+        }
+      }
     }
     const slot = d.dayIndex === PREP_DAY ? null : d.slot;
     const payload = {
@@ -1673,6 +1568,7 @@
       participant_ids: [...d.participants],
       day_index: d.dayIndex,
       slot: slot,
+      hour: slot === null ? null : (typeof d.hour === "number" ? d.hour : null),
       // moving an expense to a different bucket puts it at the end of that one
       seq: (d.editingId && d.dayIndex === d.origDayIndex && slot === d.origSlot && typeof d.seq === "number")
         ? d.seq : nextSeq(d.dayIndex, slot),
@@ -1690,9 +1586,15 @@
         payload.receipt_path = await uploadReceipt(d.shot);
       } catch (err) {
         btn.textContent = label;
-        btn.disabled = false;
-        toast("영수증 업로드 실패 — 연결을 확인하고 다시 시도해 주세요", true);
-        return;
+        // Losing the record is worse than losing the photo. On a bad connection
+        // the expense can go in now and the receipt can follow from the hotel
+        // wifi; the status screen counts what is still owed a photo.
+        if (!confirm("영수증을 올리지 못했어요. 연결이 나쁜 것 같아요.\n\n지출만 먼저 저장하고 영수증은 나중에 붙일까요?\n(현황 화면에 미첨부로 남습니다)")) {
+          btn.disabled = false;
+          toast("저장하지 않았어요 — 연결이 돌아오면 저장을 다시 눌러 주세요", true);
+          return;
+        }
+        payload.receipt_path = null;
       }
       btn.textContent = label;
     }
@@ -1727,11 +1629,12 @@
     // saving must never be blocked by a SQL file nobody ran yet. Two rounds
     // because the rate columns and the timeline columns can both be missing.
     let { error } = await send(sanitize(payload));
-    for (let i = 0; i < 3 && error; i++) {
+    for (let i = 0; i < 4 && error; i++) {
       let dropped = false;
       if (isMissingRateCol(error) && !rateColsMissing) { rateColsMissing = true; dropped = true; }
       if (isMissingTimelineCol(error) && !timelineColsMissing) { timelineColsMissing = true; dropped = true; }
       if (isMissingReceiptCol(error) && !receiptColMissing) { receiptColMissing = true; dropped = true; }
+      if (isMissingHourCol(error) && !hourColMissing) { hourColMissing = true; dropped = true; }
       if (!dropped) break;
       ({ error } = await send(sanitize(payload)));
     }
@@ -1741,7 +1644,7 @@
     // rate columns is a deliberate choice here — the ⚡기준환율 badge and the
     // settlement note already say so, and repeating it on every single save is
     // just noise about a decision already made.
-    toast(timelineColsMissing || receiptColMissing
+    toast(timelineColsMissing || receiptColMissing || hourColMissing
       ? "저장됨 (일부 항목 미적용 — SQL 실행 필요)"
       : (d.editingId ? "수정됨" : "저장됨 ✓"));
     // reset for next entry
@@ -1777,41 +1680,18 @@
     if (e.settled) sub += " · ✓정산완료";
     if (dayOf(e) !== null) sub += `\n${dayLabel(e.day_index)}${e.slot ? " · " + (SLOT_EMOJI[e.slot] || "") + e.slot : ""}`;
     $("modal-sub").textContent = sub;
+    // "Settled on the spot" means the payer was paid back right there. Nobody
+    // pays the pot back, so offering it on a pot expense only invites a tap that
+    // quietly inflates the balance by that amount.
+    // Also hidden on a deposit: marking the trip fee "settled" would drop it out
+    // of the balance and the pot would look that much emptier for no reason.
+    const potPaid = isLedger(state.members.find((m) => m.id === e.payer_id));
+    $("modal-settle").style.display = ((potPaid || isDeposit(e)) && !e.settled) ? "none" : "block";
     $("modal-settle").textContent = e.settled ? "↩ 정산완료 해제" : "✓ 현장정산 완료로 표시";
     $("modal-rate").style.display = cur === "KRW" ? "none" : "block";
     $("modal-shot").style.display = receiptColMissing ? "none" : "block";
     $("modal-shot").textContent = e.receipt_path ? "🧾 영수증 보기" : "📷 영수증 첨부";
-    // reordering only makes sense when something else shares this day+slot
-    const sibs = bucketSiblings(e);
-    const i = sibs.findIndex((x) => x.id === e.id);
-    $("modal-move").style.display = sibs.length > 1 ? "flex" : "none";
-    $("modal-up").disabled = i <= 0;
-    $("modal-down").disabled = i < 0 || i >= sibs.length - 1;
     $("modal-back").classList.add("show");
-  }
-
-  // Renumber the whole bucket instead of swapping two rows: pre-migration rows
-  // have no seq at all, so a swap would be a no-op on them.
-  async function moveExpense(dir) {
-    const e = modalExpense;
-    const list = bucketSiblings(e);
-    const i = list.findIndex((x) => x.id === e.id);
-    const j = i + dir;
-    closeModal();
-    if (i < 0 || j < 0 || j >= list.length) return;
-    list.splice(j, 0, list.splice(i, 1)[0]);
-    const writes = list
-      .map((x, k) => (x.seq === k ? null : sb.from("expenses").update({ seq: k }).eq("id", x.id)))
-      .filter(Boolean);
-    const bad = (await Promise.all(writes)).find((r) => r && r.error);
-    if (bad) {
-      if (isMissingTimelineCol(bad.error)) {
-        timelineColsMissing = true;
-        toast("migration-timeline.sql 먼저 실행해 주세요", true);
-      } else toast("순서 변경 실패: " + bad.error.message, true);
-      return;
-    }
-    await refetch();
   }
 
   // ── manual rate override ──
@@ -1903,6 +1783,10 @@
     // keep the slot it already sits in; only recompute seq if the user moves it
     if (dayOf(e) !== null) state.draft.dayIndex = e.day_index;
     if (e.slot) state.draft.slot = e.slot;
+    // Carry the recorded hour, or leave it empty for rows written before there
+    // was one — stamping "now" onto a three-day-old expense invents a fact.
+    state.draft.hour = hourOf(e);
+    state.draft.whenTouched = true; // an existing row already has its own time
     state.draft.seq = (typeof e.seq === "number") ? e.seq : null;
     state.draft.origDayIndex = state.draft.dayIndex;
     state.draft.origSlot = slotKeyOf(e);
@@ -1922,10 +1806,16 @@
   async function deleteExpense() {
     const e = modalExpense;
     closeModal();
-    const { error } = await sb.from("expenses").delete().eq("id", e.id);
-    if (error) { toast("삭제 실패", true); return; }
-    toast("삭제됨");
-    await refetch();
+    // Fourteen people tap around this list and 삭제 sits right above 닫기.
+    // There is no undo, so the question has to come first.
+    openConfirm("이 지출을 지울까요?",
+      `${escapeHtml(e.note || e.category || "지출")} · ${money(e.amount, e.currency || "KRW")}<br>되돌릴 수 없어요.`,
+      async () => {
+        const { error } = await sb.from("expenses").delete().eq("id", e.id);
+        if (error) { toast("삭제 실패", true); return; }
+        toast("삭제됨");
+        await refetch();
+      });
   }
 
   // ═══════════════════ ONBOARDING ═══════════════════
@@ -1985,7 +1875,10 @@
     $("ident-room").textContent = state.room.name;
     const wrap = $("ident-chips");
     wrap.innerHTML = "";
-    state.members.forEach((m) => {
+    // The pot is not a seat anyone can sit in. This screen is reachable three
+    // ways — first join, cancelling the claim dialog, and "이름 바꾸기" — so the
+    // filter belongs here rather than at each caller.
+    realPeople().forEach((m) => {
       const b = document.createElement("button");
       b.className = "name-chip";
       b.textContent = m.name;
@@ -2019,7 +1912,9 @@
     renderCats();
     renderAll();
     show("screen-input");
-    setTimeout(() => $("amount").focus(), 100);
+    // No autofocus on arrival. Most of a group never enters anything — they open
+    // the app to read a number — and a keyboard covering half the screen on
+    // launch reads as "type something" to people who came to look.
   }
 
   // ── home (every trip) ──
@@ -2065,7 +1960,9 @@
     $("auth-tabs").querySelectorAll("button").forEach((b) =>
       b.classList.toggle("on", b.dataset.mode === authMode));
     $("auth-sub").textContent = up ? "이름과 비밀번호를 정해요" : "이름과 비밀번호로 들어와요";
-    $("auth-id-hint").textContent = up ? "— 실명 두 글자" : "";
+    // Both modes carry the hint: without it on the login side, people who
+    // signed up with a full name try their given name alone and get nowhere.
+    $("auth-id-hint").textContent = "— 성까지 세 글자";
     $("auth-signup-only").style.display = up ? "block" : "none";
     $("auth-go").textContent = up ? "시작하기" : "로그인";
     $("auth-pw").setAttribute("autocomplete", up ? "new-password" : "current-password");
@@ -2342,9 +2239,11 @@
     // With accounts, "who am I in this trip" is answered by the link between a
     // member row and the logged-in user, not by a name saved in this browser.
     if (accountsReady && me) {
-      const mine = state.members.find((m) => m.user_id === me.id);
+      // The pot may be parked on someone's account so no one else can take it;
+      // that must not make its owner *become* the pot.
+      const mine = state.members.find((m) => m.user_id === me.id && !isLedger(m));
       if (mine) { rememberMe(roomId, mine.id); enterApp(mine.id); return; }
-      const unclaimed = state.members.filter((m) => !m.user_id);
+      const unclaimed = state.members.filter((m) => !m.user_id && !isLedger(m));
       show("screen-identity");
       renderIdentity();
       $("ident-back").style.display = "none";
@@ -2447,6 +2346,11 @@
     $("who-bar").onclick = () => $("who-panel").classList.toggle("open");
     $("when-bar").onclick = () => $("when-panel").classList.toggle("open");
     $("save-btn").onclick = saveExpense;
+    // Phones keep the page alive in the background for hours. Coming back to it
+    // should feel like opening it fresh, not like resuming this morning.
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) refreshDraftClock();
+    });
     $("input-room").onclick = goHome;
     $("go-status").onclick = () => { renderStatus(); show("screen-status"); };
 
@@ -2456,6 +2360,7 @@
     $("startdate-btn").onclick = openDateModal;
     $("settle-btn").onclick = renderSettlement;
     $("member-add-btn").onclick = addMember;
+    $("pot-add").onclick = addPot;
     $("member-new").addEventListener("keydown", (e) => { if (e.key === "Enter") addMember(); });
     $("delete-trip-btn").onclick = deleteTrip;
 
@@ -2474,8 +2379,6 @@
     $("modal-edit").onclick = editExpense;
     $("modal-delete").onclick = deleteExpense;
     $("modal-rate").onclick = openRateModal;
-    $("modal-up").onclick = () => moveExpense(-1);
-    $("modal-down").onclick = () => moveExpense(1);
     $("modal-shot").onclick = modalShot;
 
     // receipts

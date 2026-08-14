@@ -718,9 +718,10 @@
       currency: state.room.default_currency || "KRW",
       category: null,
       note: "",
-      // Where a pot exists it pays for nearly everything, so it is the default
-      // and the rare personal expense is the one that costs a tap.
-      payerId: (state.members.find(isLedger) || { id: state.me }).id,
+      // The person entering is usually the person who just paid. A pot that only
+      // covers a few big pre-arranged things (lodging, the rental car) would make
+      // the wrong default here — most rows on the ground are somebody's card.
+      payerId: state.me,
       // the pot never takes a share of what it pays for
       participants: new Set(realPeople().map((m) => m.id)),
       editingId: null,

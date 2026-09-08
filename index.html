@@ -746,6 +746,9 @@
     <div class="msub">이 날이 <b>1일차</b>가 돼요. 날짜를 바꾸면 이미 넣은 지출의 일차도
       같이 옮겨가고, 새 시작일보다 이른 건 '🎒 여행 전 준비'로 들어가요.</div>
     <input id="date-input" class="text-input" type="date" />
+    <p class="field-label" style="margin-top:14px">며칠 여행인가요 <span style="font-weight:400">— 4박 5일이면 5</span></p>
+    <div class="msub" style="margin-top:0">출발 전에도 마지막 날까지 일차를 고를 수 있어요. 비워두면 날짜가 갈수록 하나씩 늘어나요.</div>
+    <input id="date-days" class="text-input" type="number" inputmode="numeric" min="1" max="60" placeholder="예: 5" />
     <button class="m-btn" id="date-save" style="margin-top:14px">저장</button>
     <button class="m-btn cancel" id="date-cancel">취소</button>
   </div>

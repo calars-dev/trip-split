@@ -37,7 +37,7 @@
   // But naming columns means naming ones this database might not have — the
   // rate migration was never run here, for instance. So ask for everything and
   // drop whatever it says it lacks, once, then remember.
-  let roomCols = ["id", "name", "default_currency", "start_date",
+  let roomCols = ["id", "name", "default_currency", "start_date", "day_count",
                   "base_rate_jpy", "base_rate_date", "has_pw", "created_at"];
   let hasPwCol = true;
   async function roomQuery(build) {
@@ -52,15 +52,19 @@
     return { data: null, error: { message: "rooms 조회 실패" } };
   }
 
+  // What you tap on the road. 숙소·투어·렌터카·입장료 are booked once, usually
+  // before leaving, so they cost a button each while earning almost no taps.
   const CATEGORIES = [
     { key: "식비", emoji: "🍚" }, { key: "카페", emoji: "☕" },
-    { key: "교통", emoji: "🚕" }, { key: "숙소", emoji: "🏠" },
-    { key: "투어", emoji: "🤿" }, { key: "렌터카", emoji: "🚗" },
-    { key: "입장료", emoji: "🎟" }, { key: "선물", emoji: "🎁" },
+    { key: "교통", emoji: "🚕" }, { key: "선물", emoji: "🎁" },
     { key: "마트", emoji: "🛒" }, { key: "술",   emoji: "🍺" },
     { key: "기타", emoji: "➕" },
   ];
-  const EMOJI = Object.fromEntries(CATEGORIES.map((c) => [c.key, c.emoji]));
+  // Retired from the buttons but still sitting on older expenses. Without their
+  // icons those rows would render blank where every other row has a face.
+  const RETIRED_EMOJI = { 숙소: "🏠", 투어: "🤿", 렌터카: "🚗", 입장료: "🎟" };
+  const EMOJI = Object.assign(
+    Object.fromEntries(CATEGORIES.map((c) => [c.key, c.emoji])), RETIRED_EMOJI);
   const CUR = { KRW: "₩", JPY: "¥" };
 
   // A ledger member — the shared pot — is a column in the books, not a person.
@@ -830,8 +834,12 @@
     const dc = $("day-chips"); dc.innerHTML = "";
     dc.appendChild(chip("🎒 준비", d.dayIndex === PREP_DAY,
       () => { d.dayIndex = PREP_DAY; d.whenTouched = true; renderWhen(); }));
-    // one day past the furthest we know about, so tomorrow can be logged in advance
-    for (let i = 1; i <= Math.min(lastDayIndex() + 1, MAX_DAY_CHIPS); i++) {
+    // One day past the furthest we know about, so tomorrow can be logged in
+    // advance — and the whole trip when its length is known, so a day-four tour
+    // booked from home has a chip to land on before anyone has left.
+    const known = Number(state.room && state.room.day_count) || 0;
+    const upto = Math.min(Math.max(lastDayIndex() + 1, known), MAX_DAY_CHIPS);
+    for (let i = 1; i <= upto; i++) {
       dc.appendChild(chip(i + "일차", d.dayIndex === i,
         ((n) => () => { d.dayIndex = n; d.whenTouched = true; renderWhen(); })(i)));
     }
@@ -1037,6 +1045,7 @@
   function openDateModal() {
     const s = state.room && state.room.start_date;
     $("date-input").value = s ? String(s).slice(0, 10) : todayStr();
+    $("date-days").value = state.room && state.room.day_count ? String(state.room.day_count) : "";
     $("date-back").classList.add("show");
   }
   function closeDateModal() { $("date-back").classList.remove("show"); }
@@ -1084,8 +1093,31 @@
     const v = $("date-input").value;
     if (!v) { toast("날짜를 선택하세요", true); return; }
     const prev = state.room.start_date ? String(state.room.start_date).slice(0, 10) : null;
-    if (prev === v) { closeDateModal(); return; }
+
+    // Trip length lives in the same box, so it has to be saveable on its own —
+    // the usual visit here changes only the number of days.
+    const rawDays = $("date-days").value.trim();
+    let days = rawDays === "" ? null : Math.round(Number(rawDays));
+    if (days !== null && (!isFinite(days) || days < 1 || days > 60)) {
+      toast("여행 일수는 1~60 사이로 넣어주세요", true); return;
+    }
+    const prevDays = state.room.day_count == null ? null : Number(state.room.day_count);
+    const daysChanged = days !== prevDays;
+    if (prev === v && !daysChanged) { closeDateModal(); return; }
     closeDateModal();
+
+    if (daysChanged) {
+      const r = await sb.from("rooms").update({ day_count: days }).eq("id", state.room.id);
+      if (r.error) {
+        if (/column rooms\.day_count does not exist/.test(r.error.message || "")) {
+          toast("migration-daycount.sql 먼저 실행해 주세요", true);
+        } else toast("여행 일수 저장 실패: " + r.error.message, true);
+      } else {
+        state.room.day_count = days;
+        if (state.draft) renderWhen();
+      }
+    }
+    if (prev === v) { toast("여행 일수 저장됨"); return; }
 
     const { error } = await sb.from("rooms").update({ start_date: v }).eq("id", state.room.id);
     if (error) {
@@ -1518,14 +1550,18 @@
     return raw ? parseInt(raw, 10) : 0;
   }
 
-  // live "≈₩…" hint under the amount while typing a foreign-currency expense
+  // Live conversion under the amount, both ways. Typing yen answers "how much
+  // is that really?"; typing won answers "is this the number on the till?" —
+  // in Japan the price tag is in yen even when the card is charged in won.
   function renderAmountPreview() {
     const el = $("amt-krw");
     if (!el || !state.draft) return;
-    if (state.draft.currency === "KRW") { el.textContent = ""; return; }
     const amt = parseAmount();
+    if (!amt) { el.textContent = ""; return; }
     const r = state.draft.rateKrw ? Number(state.draft.rateKrw) : currentJpyRate().rate;
-    el.textContent = amt ? `≈ ${money(amt * r, "KRW")}  ·  100¥ = ${fmt(r * 100)}원` : "";
+    el.textContent = state.draft.currency === "KRW"
+      ? `≈ ${money(Math.round(amt / r), "JPY")}  ·  100¥ = ${fmt(r * 100)}원`
+      : `≈ ${money(amt * r, "KRW")}  ·  100¥ = ${fmt(r * 100)}원`;
   }
 
   async function saveExpense() {

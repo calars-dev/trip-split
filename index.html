@@ -165,7 +165,8 @@
   .exp-emoji { width: 40px; height: 40px; border-radius: 11px; background: var(--surface);
                display: flex; align-items: center; justify-content: center; font-size: 20px; flex: 0 0 auto; }
   .exp-mid { flex: 1; min-width: 0; }
-  .exp-title { font-weight: 600; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* a span is inline by default, and clipping/ellipsis don't apply to inline boxes */
+  .exp-title { display: block; font-weight: 600; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .exp-sub { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
   .exp-amt { font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .exp-amt-col { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; flex: 0 0 auto; }

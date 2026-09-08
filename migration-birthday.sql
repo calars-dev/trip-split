@@ -1,8 +1,10 @@
 -- Trip Split — 이름 고르고 생일 네 자리로 들어오기
 --
--- 순서는 어느 쪽이어도 된다. 이 파일은 **아무것도 잠그지 않는다** — 칸과 함수를
--- 더하고 권한을 열기만 하므로 지금 도는 앱이 그대로 돈다. 반대로 SQL 을 먼저
--- 돌려도 새 함수를 부르는 건 새 앱뿐이라 아무 일도 일어나지 않는다.
+-- 순서는 어느 쪽이어도 된다. 다만 **5번은 앱을 먼저 올린 뒤에 돌려라** — 옛
+-- 앱은 members 를 select("*") 로 읽어서 birth_hash 권한을 회수하면 명단이
+-- 통째로 비어 버린다. 1~4번은 칸과 함수를 더하고 권한을 열기만 하므로 지금
+-- 도는 앱이 그대로 돈다. 반대로 1~4번을 먼저 돌려도 새 함수를 부르는 건 새
+-- 앱뿐이라 아무 일도 일어나지 않는다.
 -- (새 앱은 이 함수들이 없으면 옛 로그인 화면으로 물러난다 — test/birthday.test.js)
 -- 여러 번 돌려도 안전하다.
 --
@@ -21,8 +23,16 @@
 --
 -- 생일이 저장되는 방식
 --   원문은 저장하지 않는다. sha256(멤버id + ':' + 월일) 만 남는다. 멤버 id 를
---   같이 섞으므로 생일이 같은 두 사람(예: 11.18)도 저장값이 다르고, DB 가
---   통째로 새더라도 네 자리를 되찾기 위한 표를 미리 만들어 둘 수 없다.
+--   같이 섞으므로 생일이 같은 두 사람(예: 11.18)도 저장값이 다르고, 여러 방에
+--   두루 쓸 표(레인보우 테이블) 하나로 뚫리지도 않는다.
+--
+--   ⚠️ 그렇다고 해시가 새도 되는 건 아니다. 앞의 보장은 **공용 표**에만 해당하고
+--   한 사람을 노린 전수대입은 전혀 막지 못한다. 후보가 월일 1만 가지뿐이라
+--   멤버 id 와 해시가 같이 손에 들어오면 sha256 을 1만 번 돌려 원문을 되찾는다
+--   (14명 전원 복원에 0.01초를 실측했다). 멤버 id 는 room_seats 로 이미 공개돼
+--   있으므로 **해시 한 칸이 유일한 자물쇠다.** 그래서 5번에서 anon 의
+--   birth_hash 읽기 권한을 회수한다. 생일은 지출과 달리 "링크를 아는 사람은 다
+--   본다"는 이 앱의 선 밖이다.
 
 create extension if not exists pgcrypto with schema extensions;
 
@@ -32,8 +42,9 @@ create extension if not exists pgcrypto with schema extensions;
 alter table public.members add column if not exists birth_hash text;
 
 -- ── 2. 생일 확인 ────────────────────────────────────────────────────
--- anon 은 members 를 못 읽으므로 함수가 대신 본다 = security definer.
--- 예/아니오만 답한다. 해시도, 이 방에 누가 있는지도 밖으로 내보내지 않는다.
+-- 5번을 돌리고 나면 anon 은 birth_hash 를 못 읽으므로 함수가 대신 본다
+-- = security definer. 예/아니오만 답한다. 해시도, 이 방에 누가 있는지도
+-- 밖으로 내보내지 않는다.
 create or replace function public.birth_ok(p_room text, p_member uuid, p_birth text)
 returns boolean
 language sql
@@ -117,7 +128,34 @@ $$;
 revoke all on function public.claim_by_birth(text, uuid, text) from public;
 grant execute on function public.claim_by_birth(text, uuid, text) to authenticated;
 
+-- ── 5. 생일 해시 잠그기 ─────────────────────────────────────────────
+-- ⚠️ 이 절만 앱보다 늦게 돌려야 한다. 옛 앱은 members 를 select("*") 로 읽어서
+--    birth_hash 를 못 읽게 되는 순간 명단 조회 전체가 permission denied 로
+--    떨어진다. 새 app.js(칸을 하나씩 적는 memberQuery)를 배포한 뒤에 돌려라.
+--
+-- 왜 컬럼 권한을 회수하나
+--   anon 키는 config.js 에 공개돼 있다. 그 키만으로
+--     GET /rest/v1/members?room_id=eq.<방>&select=birth_hash
+--   가 200 으로 해시를 통째로 돌려주고, 멤버 id 는 room_seats 가 이미 알려준다.
+--   월일 후보가 1만 개뿐이라 sha256 을 1만 번 돌리면 원문이 나온다 — 실측으로
+--   14명 전원이 0.01초에 복원됐다. 해시를 못 읽게 하는 것 하나로 이 길이 막힌다
+--   (birth_ok / claim_by_birth 는 security definer 라 그대로 돈다).
+--
+-- ⚠️ 컬럼 단위 revoke 는 테이블 단위 grant 를 이기지 못한다. 그래서 테이블
+--    권한을 먼저 회수하고 필요한 칸만 다시 준다. 순서를 바꾸면 아무 효과가 없다.
+revoke select on public.members from anon;
+grant select (id, room_id, name, created_at, user_id, is_ledger)
+  on public.members to anon;
+
+-- 실시간 구독도 같은 권한을 따르므로 members 변경 알림에 birth_hash 가 실리지
+-- 않는다. 앱은 알림 내용을 쓰지 않고 refetch 만 하므로 동작에는 변화가 없다.
+
 -- ── 확인 ────────────────────────────────────────────────────────────
+-- 아래가 permission denied 로 떨어져야 잠긴 것이다(anon 키로).
+--   GET /rest/v1/members?room_id=eq.qx73ifx&select=birth_hash
+-- 그리고 아래는 그대로 200 이어야 앱이 돈다.
+--   GET /rest/v1/members?room_id=eq.qx73ifx&select=id,room_id,name,created_at,user_id,is_ledger
+--
 -- 생일이 들어간 자리가 몇인지 세어 본다. 시드를 돌린 뒤 14 가 나와야 한다.
 --   select count(*) from public.members
 --    where room_id = 'qx73ifx' and birth_hash is not null;

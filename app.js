@@ -52,6 +52,24 @@
     return { data: null, error: { message: "rooms 조회 실패" } };
   }
 
+  // ⚠️ members 는 select("*") 로 읽지 않는다. birth_hash 가 같이 실려 나오는데
+  // 앱은 그 값을 쓰지 않고(생일 확인은 birth_ok RPC 가 예/아니오만 답한다),
+  // 멤버 id 는 room_seats 로 이미 공개돼 있어 해시만 손에 넣으면 네 자리
+  // 1만 가지를 다 돌려 생일을 되찾을 수 있다. 지출과 달리 생일은 "링크를 아는
+  // 사람은 다 본다"는 이 앱의 선 밖이므로 아예 내려받지 않는다.
+  // roomQuery 와 같은 이유로 없는 칸은 한 번 걸러내고 기억한다.
+  let memberCols = ["id", "room_id", "name", "created_at", "user_id", "is_ledger"];
+  async function memberQuery(build) {
+    for (let i = 0; i <= memberCols.length; i++) {
+      const res = await build(memberCols.join(","));
+      if (!res.error) return res;
+      const miss = /column members\.(\w+) does not exist/.exec(res.error.message || "");
+      if (!miss || memberCols.indexOf(miss[1]) < 0) return res;
+      memberCols = memberCols.filter((c) => c !== miss[1]);
+    }
+    return { data: null, error: { message: "members 조회 실패" } };
+  }
+
   // What you tap on the road. 숙소·투어·렌터카·입장료 are booked once, usually
   // before leaving, so they cost a button each while earning almost no taps.
   const CATEGORIES = [
@@ -115,7 +133,10 @@
   // Everything settles in KRW. A foreign-currency expense carries the rate it was
   // saved with, so past settlement numbers never shift when the market moves.
   const FX_API = "https://api.frankfurter.dev/v1/"; // ECB reference rates, no key needed
-  const FALLBACK_JPY_KRW = 9.0; // last resort: offline since the trip was created
+  // Last resort: offline since the trip was created, and the room has no rate yet.
+  // Refresh this before a trip — 9.0 was a year stale by 2026-09 and overstated
+  // every yen expense by 3.5%. Measured 2026-09-08 (ECB via frankfurter): 8.6954.
+  const FALLBACK_JPY_KRW = 8.70;
 
   // Set when the DB predates migration-rate.sql. Saving must keep working on an
   // un-migrated database, so we drop the rate columns and convert at the room rate.
@@ -440,7 +461,8 @@
   const isLocked = (room) => hasPwCol && room && room.has_pw === true;
   async function refetch() {
     const [mRes, eRes] = await Promise.all([
-      sb.from("members").select("*").eq("room_id", state.room.id).order("created_at"),
+      memberQuery((cols) =>
+        sb.from("members").select(cols).eq("room_id", state.room.id).order("created_at")),
       sb.from("expenses").select("*").eq("room_id", state.room.id).order("created_at", { ascending: false }),
     ]);
     if (!mRes.error) state.members = mRes.data;
@@ -1268,7 +1290,8 @@
        <br><br>회비로 걷은 돈을 여기 넣어두고, 다 같이 쓰는 것은 이 이름으로 결제하면 돼요.`,
       async () => {
         const { data, error } = await sb.from("members")
-          .insert({ room_id: state.room.id, name, is_ledger: true }).select().single();
+          .insert({ room_id: state.room.id, name, is_ledger: true })
+          .select("id,is_ledger").single();
         if (error) {
           // 컬럼이 없으면 사람으로 들어가 조용히 15번째 참가자가 된다 — 만들지 않는 편이 낫다.
           if (/is_ledger/.test(error.message || "")) toast("migration-pot.sql 먼저 실행해 주세요", true);
@@ -1898,7 +1921,8 @@
     useKey(key); // members/expenses below need the key straight away
     const memRow = { room_id: id, name: meName };
     if (accountsReady && me) memRow.user_id = me.id;
-    const { data: mem, error: mErr } = await sb.from("members").insert(memRow).select().single();
+    const { data: mem, error: mErr } = await sb.from("members").insert(memRow)
+      .select("id").single();
     if (mErr) { btn.disabled = false; toast("멤버 생성 실패", true); return; }
     rememberMe(id, mem.id);
     markOwner(id); // this device created the trip → can delete it
@@ -1934,7 +1958,8 @@
     if (!name) { toast("이름을 입력하세요", true); return; }
     const row = { room_id: state.room.id, name };
     if (accountsReady && me) row.user_id = me.id; // this row is now mine
-    const { data: mem, error } = await sb.from("members").insert(row).select().single();
+    const { data: mem, error } = await sb.from("members").insert(row)
+      .select("id,room_id,name,created_at,user_id").single();
     if (error) { toast("추가 실패", true); return; }
     rememberMe(state.room.id, mem.id);
     state.members.push(mem);
@@ -2124,7 +2149,7 @@
       // The locking migration hasn't run yet, so the function isn't there —
       // take the seat directly, which the current policies still allow.
       const r = await sb.from("members").update({ user_id: me.id })
-        .eq("id", memberId).eq("room_id", state.room.id).is("user_id", null).select();
+        .eq("id", memberId).eq("room_id", state.room.id).is("user_id", null).select("id");
       error = r.error;
       data = !!(r.data && r.data.length);
     }
@@ -2142,7 +2167,8 @@
     let { data, error } = await sb.rpc("join_room", { p_room: state.room.id, p_name: name });
     if (missingFn(error)) {
       const r = await sb.from("members")
-        .insert({ room_id: state.room.id, name: name, user_id: me.id }).select().single();
+        .insert({ room_id: state.room.id, name: name, user_id: me.id })
+        .select("id").single();
       error = r.error;
       data = r.data && r.data.id;
     }

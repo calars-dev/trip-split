@@ -2116,6 +2116,123 @@
     location.search = "?r=" + state.room.id;
   }
 
+  // ── 이름 고르고 생일 네 자리 ──
+  // The old way asked for an id, six digits and a memory question before the
+  // trip even appeared. For fourteen people on the first morning that is three
+  // screens too many. Here the name they tap *is* the id, and the four digits
+  // of their birthday are the password.
+  //
+  // The seat's login is derived from the seat, so nothing has to be handed out:
+  // everyone can work theirs out from what is already on screen. That is the
+  // trade — among friends who know each other's birthdays, a seat is no longer
+  // proof of who is sitting in it. Chosen deliberately; see migration-birthday.sql.
+  let joinRoom = null;
+  let joinPick = null;
+
+  function seatHandle(roomId, memberId) {
+    return "s_" + roomId + "_" + memberId.replace(/-/g, "").slice(0, 12);
+  }
+  // Supabase refuses anything under six characters, so the four digits ride
+  // along with a fixed prefix. The secret is still just the four digits.
+  function birthPw(birth) { return "bd" + birth; }
+
+  // Returns false when this trip can't be joined this way — an old database
+  // without the migration, or a room whose seats have no birthdays. The caller
+  // then falls back to the id-and-password screen, so nothing is ever a dead end.
+  async function openJoin(roomId) {
+    let name, seats;
+    try {
+      const peek = await sb.rpc("room_peek", { p_room: roomId });
+      if (peek.error || !peek.data) return false;
+      const rows = await sb.rpc("room_seats", { p_room: roomId });
+      if (rows.error || !rows.data || !rows.data.length) return false;
+      name = peek.data;
+      seats = rows.data;
+    } catch (err) { return false; }
+
+    joinRoom = roomId;
+    joinPick = null;
+    $("join-room").textContent = name;
+    $("join-sub").textContent = "누구세요? 이름을 골라주세요";
+    $("join-birth").value = "";
+    $("join-birth-wrap").style.display = "none";
+    $("join-go").style.display = "none";
+
+    const box = $("join-chips");
+    box.innerHTML = "";
+    seats.forEach((s) => {
+      const b = document.createElement("button");
+      b.className = "name-chip";
+      b.textContent = s.name;   // textContent, not innerHTML — names come from the database
+      b.onclick = () => pickSeat(s, b);
+      box.appendChild(b);
+    });
+    show("screen-join");
+    return true;
+  }
+
+  function pickSeat(seat, btn) {
+    joinPick = seat;
+    $("join-chips").querySelectorAll(".name-chip")
+      .forEach((b) => b.classList.toggle("on", b === btn));
+    $("join-sub").textContent = seat.name + " — 생일 네 자리를 넣어주세요";
+    $("join-birth-wrap").style.display = "";
+    $("join-go").style.display = "";
+    $("join-birth").focus();
+  }
+
+  async function submitJoin() {
+    if (!joinPick) { toast("이름을 먼저 골라주세요", true); return; }
+    const birth = $("join-birth").value.trim();
+    if (!/^\d{4}$/.test(birth)) { toast("생일 네 자리예요 — 월일 (예: 2월 6일이면 0206)", true); return; }
+
+    const btn = $("join-go");
+    btn.disabled = true;
+    try {
+      // Ask before creating anything. A typo must not leave behind an account
+      // that only the typo can ever open.
+      const ok = await sb.rpc("birth_ok",
+        { p_room: joinRoom, p_member: joinPick.id, p_birth: birth });
+      if (ok.error) throw new Error(ok.error.message);
+      if (ok.data !== true) { toast("생일이 맞지 않아요", true); $("join-birth").select(); return; }
+
+      const handle = seatHandle(joinRoom, joinPick.id);
+      const email = handleMail(handle);
+      const pw = birthPw(birth);
+
+      // Been here before on any device → sign in. First time on this seat →
+      // make the account. The birthday was already checked, so this is safe.
+      const inRes = await sb.auth.signInWithPassword({ email: email, password: pw });
+      if (inRes.error) {
+        const up = await sb.auth.signUp({ email: email, password: pw });
+        if (up.error) throw new Error(up.error.message);
+        if (!up.data.session) throw new Error("가입은 됐는데 로그인이 안 됐어요. 다시 눌러주세요.");
+        const { error: pErr } = await sb.from("profiles")
+          .insert({ id: up.data.user.id, handle: handle, name: joinPick.name });
+        if (pErr) throw new Error("프로필 저장 실패: " + pErr.message);
+      }
+      await loadMe();
+
+      // The server is the gatekeeper, not the screen above. It hands back the
+      // seat if it is free or already ours, and refuses if it is someone else's.
+      const claim = await sb.rpc("claim_by_birth",
+        { p_room: joinRoom, p_member: joinPick.id, p_birth: birth });
+      if (claim.error) throw new Error(claim.error.message);
+      if (claim.data !== true) {
+        await sb.auth.signOut();
+        toast("이 자리는 이미 다른 사람이 쓰고 있어요", true);
+        return;
+      }
+
+      rememberMe(joinRoom, joinPick.id);
+      location.search = "?r=" + joinRoom;
+    } catch (err) {
+      toast("들어가기 실패: " + (err && err.message ? err.message : err), true);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
   // ── password gate ──
   // Does the key we already stored still open this trip? (The owner may have
   // changed the password since.)
@@ -2170,7 +2287,13 @@
     // nothing to show — the trip list is now personal.
     if (accountsReady && !me) {
       await loadMe();
-      if (!me) { renderAuth(); show("screen-auth"); return; }
+      if (!me) {
+        // Arriving on a trip link: let them in by name and birthday instead of
+        // making them build an account before they can see anything. Falls
+        // through to the id-and-password screen if this trip can't do that.
+        if (roomId && await openJoin(roomId)) return;
+        renderAuth(); show("screen-auth"); return;
+      }
     }
 
     if (!roomId) {
@@ -2301,6 +2424,12 @@
     $("auth-pw").addEventListener("keydown", (e) => { if (e.key === "Enter" && authMode === "in") submitAuth(); });
     $("auth-a").addEventListener("keydown", (e) => { if (e.key === "Enter") submitAuth(); });
     $("auth-forgot").onclick = openForgot;
+
+    $("join-go").onclick = submitJoin;
+    $("join-birth").addEventListener("keydown", (e) => { if (e.key === "Enter") submitJoin(); });
+    // A way out for anyone this screen can't place — someone who joined the old
+    // way, or whose name isn't on the list.
+    $("join-other").onclick = () => { renderAuth(); show("screen-auth"); };
     $("home-logout").onclick = logout;
     $("forgot-ask").onclick = askHint;
     $("forgot-save").onclick = resetPassword;

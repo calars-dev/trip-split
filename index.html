@@ -202,6 +202,8 @@
   .name-chip { background: var(--surface); border: 1.5px solid var(--line); border-radius: 999px;
                padding: 12px 20px; font-size: 16px; font-weight: 600; transition: all .12s; }
   .name-chip:active { transform: scale(0.95); border-color: var(--accent); }
+  /* the one you tapped, while the birthday box is open below */
+  .name-chip.on { border-color: var(--accent); color: var(--accent); }
 
   /* ── toast ── */
   #toast { position: fixed; left: 50%; bottom: calc(var(--safe-b) + 30px); transform: translateX(-50%) translateY(20px);
@@ -422,6 +424,24 @@
       </div>
       <button id="auth-go" class="primary">로그인</button>
       <button class="ghost-btn" id="auth-forgot" style="align-self:center">비밀번호를 잊었어요</button>
+    </div>
+  </section>
+
+  <!-- JOIN BY BIRTHDAY (link → tap your name → four digits) -->
+  <section id="screen-join" class="screen">
+    <div class="center-col">
+      <div>
+        <div class="hero-title" id="join-room">여행 방</div>
+        <div class="hero-sub" id="join-sub">누구세요? 이름을 골라주세요</div>
+      </div>
+      <div class="name-chips" id="join-chips"></div>
+      <div id="join-birth-wrap" style="display:none">
+        <p class="field-label">생일 <span style="font-weight:400">— 월일 네 자리</span></p>
+        <input id="join-birth" class="text-input" type="password" inputmode="numeric"
+               placeholder="예: 0206" maxlength="4" autocomplete="current-password" />
+      </div>
+      <button id="join-go" class="primary" style="display:none">들어가기</button>
+      <button class="ghost-btn" id="join-other" style="align-self:center">아이디로 로그인</button>
     </div>
   </section>
 

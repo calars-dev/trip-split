@@ -81,6 +81,44 @@ async function session(userAgent, standalone) {
 const $ = (w, id) => w.document.getElementById(id);
 const txt = (el) => el.textContent.replace(/\s+/g, " ").trim();
 
+
+// 실제로 친구가 밟는 길: 링크 -> 이름 고르기(screen-join) -> 들어가면 기록.
+// 옛 테스트는 계정 기능이 없는 DB를 흉내내 screen-identity 로 떨어졌고, 그래서
+// 이름 고르는 화면이 join 으로 바뀐 뒤에도 초록불이 켜져 있었다.
+const SEATS = [
+  { id: "s-1", name: "민수", taken: false },
+  { id: "s-2", name: "지현", taken: false },
+];
+function joinClient(T) {
+  const base = makeClient(T);
+  base.rpc = (fn, args) => {
+    if (fn === "handle_available") return Promise.resolve({ data: true, error: null });
+    if (fn === "room_peek") return Promise.resolve({ data: "교토", error: null });
+    if (fn === "room_seats") return Promise.resolve({ data: SEATS, error: null });
+    return Promise.resolve({ data: null, error: { message: "function does not exist" } });
+  };
+  base.auth = {
+    getUser: () => Promise.resolve({ data: { user: null } }),
+    signInWithPassword: () => Promise.resolve({ error: { message: "no" } }),
+    signUp: () => Promise.resolve({ error: { message: "no" } }),
+    signOut: () => Promise.resolve({}),
+  };
+  return base;
+}
+async function joinSession(userAgent) {
+  const T = TABLES();
+  const dom = new JSDOM(html, { url: "https://x.test/?r=" + ROOM,
+    runScripts: "outside-only", pretendToBeVisual: true });
+  const w = dom.window;
+  Object.defineProperty(w.navigator, "userAgent", { value: userAgent, configurable: true });
+  w.TRIP_SPLIT_CONFIG = { SUPABASE_URL: "https://fake", SUPABASE_ANON_KEY: "fake" };
+  w.supabase = { createClient: () => joinClient(T) };
+  w.fetch = () => Promise.reject(new Error("offline"));
+  w.eval(appSrc);
+  await wait(300);
+  return w;
+}
+
 (async () => {
   console.log("[아이폰 사파리] 링크로 처음 들어온 친구");
   let w = await session(UA.iphoneSafari);
@@ -127,6 +165,18 @@ const txt = (el) => el.textContent.replace(/\s+/g, " ").trim();
   $(w, "install-x").click();
   ok("닫으면 사라지고", $(w, "install-hint").classList.contains("show"), false);
   ok("기억함", w.localStorage.getItem("tripsplit_install_dismissed"), "1");
+
+  console.log("\n[진짜 친구가 보는 화면] 생일 로그인 화면에서도 떠야 한다");
+  w = await joinSession(UA.iphoneSafari);
+  ok("이름 고르는 화면은 screen-join", w.document.querySelector(".screen.active").id, "screen-join");
+  ok("여기서 안내가 뜸", $(w, "install-hint").classList.contains("show"), true);
+  ok("공유 버튼을 가리킴", txt($(w, "install-how")), "공유 버튼 → '홈 화면에 추가'");
+
+  // 로그인 폼 위에 설치 배너를 얹으면 입력칸을 가린다
+  $(w, "join-other").click();
+  await wait(60);
+  ok("아이디 로그인 화면으로 감", w.document.querySelector(".screen.active").id, "screen-auth");
+  ok("거기서는 안 뜬다", $(w, "install-hint").classList.contains("show"), false);
 
   console.log("\n" + (failures ? failures + "건 실패" : "전부 통과"));
   process.exit(failures ? 1 : 0);

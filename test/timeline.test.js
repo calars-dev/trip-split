@@ -138,6 +138,12 @@ setTimeout(() => {
   check("잔액 행이 탭 가능", doc.querySelectorAll(".bal-row.tappable").length, 3);
   $("status-back").click();
   check("정산에서 나가면 기록으로", doc.querySelector(".screen.active").id, "screen-history");
+  // 설치 안내는 기록엔 떠도 되지만 입력 화면엔 안 된다 — 저장 버튼이 그 자리다
+  check("기록에서는 설치 안내가 허용됨",
+    $("install-hint").classList.contains("show") || !!w.localStorage.getItem("tripsplit_install_dismissed"), true);
+  $("history-back").click();
+  check("입력에서는 설치 안내가 없다", $("install-hint").classList.contains("show"), false);
+  $("go-history").click();
 
   console.log("\n[타임라인] 날짜별 묶음과 시계 순서");
   const days = [...doc.querySelectorAll("#timeline .tl-day")];

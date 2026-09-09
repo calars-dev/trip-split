@@ -211,9 +211,14 @@
   }
 
   // ── "홈 화면에 추가" ──
-  // Only where it helps: the trip list, and the moment a friend first opens a
-  // shared link. Never on top of the input screen, which has a save button
-  // right where this sits.
+  // Only where it helps. Never on top of the input screen: the save button sits
+  // exactly where this bar would, and covering it during a meal is worse than
+  // never installing at all.
+  //
+  // The list below is the whole feature. When the name-picking screen was
+  // replaced (identity → join), this was not updated, so the fourteen people
+  // arriving on a shared link never saw it once — which is the only audience
+  // it was built for.
   const INSTALL_KEY = "tripsplit_install_dismissed";
   let installPrompt = null; // Chrome hands us one; Safari never will
   const UA = navigator.userAgent;
@@ -229,7 +234,10 @@
 
   function renderInstallHint(screenId) {
     const el = $("install-hint");
-    const wanted = screenId === "screen-home" || screenId === "screen-identity";
+    const wanted = screenId === "screen-home"      // 내 여행 목록
+      || screenId === "screen-join"                 // 링크로 처음 들어와 이름 고르는 화면
+      || screenId === "screen-identity"             // 옛 이름 고르기 (아직 남아 있는 경로)
+      || screenId === "screen-history";             // 기록 — 로그인 뒤 처음 닿는 화면
     if (!wanted || isStandalone() || localStorage.getItem(INSTALL_KEY)) {
       el.classList.remove("show");
       return;

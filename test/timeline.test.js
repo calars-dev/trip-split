@@ -147,14 +147,25 @@ setTimeout(() => {
   check("날짜별 합계", days.map((d) => txt(d.querySelector(".tl-day-total"))),
     ["₩680,000", "₩63,500", "₩10,920"]);
   check("시간대 스파인은 사라짐", doc.querySelectorAll(".tl-slot").length, 0);
+  check("기본은 요약 보기", [...$("tl-view").children].filter((b) => b.className === "on").map(txt), ["요약"]);
   check("8/1은 시계 순서 (08:10 -> 12:05 -> 12:30 -> 22:00)",
-    [...days[1].querySelectorAll(".exp-title")].map(txt), ["삼각김밥", "커피", "라멘", "이자카야"]);
-  check("행마다 몇 시 몇 분인지 보임",
-    [...days[1].querySelectorAll(".exp-sub")].map((e) => txt(e).split(" ")[0]),
-    ["08:10", "12:05", "12:30", "22:00"]);
+    [...days[1].querySelectorAll(".tlb-n")].map(txt), ["삼각김밥", "커피", "라멘", "이자카야"]);
+  check("요약은 한 줄에 시각이 앞선다",
+    [...days[1].querySelectorAll(".tlb-t")].map(txt), ["08:10", "12:05", "12:30", "22:00"]);
+  check("요약에는 영수증 썸네일이 없다", doc.querySelectorAll("#timeline .exp-emoji").length, 0);
   check("막대는 가장 많이 쓴 날이 100%",
     days.map((d) => d.querySelector(".tl-bar i").style.width), ["100%", "9%", "2%"]);
-  check("엔화 행은 원화 환산도 같이", txt(days[2].querySelector(".exp-krw")), "≈₩10,920");
+
+  console.log("\n[타임라인] 상세 보기로 전환");
+  [...$("tl-view").children].find((b) => txt(b) === "상세").click();
+  const days2 = [...doc.querySelectorAll("#timeline .tl-day")];
+  check("상세로 바뀜", [...$("tl-view").children].filter((b) => b.className === "on").map(txt), ["상세"]);
+  check("순서는 그대로",
+    [...days2[1].querySelectorAll(".exp-title")].map(txt), ["삼각김밥", "커피", "라멘", "이자카야"]);
+  check("상세는 시각과 낸 사람을 같이",
+    txt(days2[1].querySelector(".exp-sub")).slice(0, 10), "08:10 · 민수");
+  check("엔화 행은 원화 환산도 같이", txt(days2[2].querySelector(".exp-krw")), "≈₩10,920");
+  check("고른 보기는 기억된다", w.localStorage.getItem("tripsplit_tlview"), "full");
 
   console.log("\n[타임라인] 멤버 필터");
   const chips = [...$("tl-filters").children];
@@ -166,6 +177,7 @@ setTimeout(() => {
   //              9000/3=3000, 40000/3=13333, 10920/3=3640  → 251,473
   check("나눈 것 합계 = 6건 전부의 1/3", txt(doc.querySelector(".tl-sum")), "민수 · 7건 합계 ₩251,473");
   check("나눈 것 모드는 인원수를 표시", txt(doc.querySelector(".tl-share")), "3인 나눔");
+  [...$("tl-view").children].find((b) => txt(b) === "요약").click(); // 뒷 검증은 합계만 쓴다
 
   console.log("\n[정산과의 일치]");
   // every member's "나눈 것" total must equal what the settlement charges them

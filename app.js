@@ -187,6 +187,9 @@
     me: null, // member id
     draft: null, // {amount, currency, category, note, payerId, participants:Set, editingId}
     filter: { memberId: null, mode: "paid" }, // timeline: null = everyone, mode paid|share
+    // 요약: 한 줄에 시각·내용·금액만. 상세: 영수증 썸네일과 부가 정보까지.
+    // 열네 명이 회비를 넣으면 상세는 열다섯 줄짜리 벽이 된다.
+    tlView: "brief",
   };
 
   const $ = (id) => document.getElementById(id);
@@ -1430,6 +1433,17 @@
         ((id) => () => { f.memberId = id; renderTimeline(); })(m.id)));
     });
 
+    // 보기 전환은 필터와 별개다 — 누구를 보든 어떻게 볼지는 따로 고른다
+    const vb = $("tl-view");
+    vb.innerHTML = "";
+    [["brief", "요약"], ["full", "상세"]].forEach(([k, label]) => {
+      const b = document.createElement("button");
+      b.className = state.tlView === k ? "on" : "";
+      b.textContent = label;
+      b.onclick = () => { setTlView(k); };
+      vb.appendChild(b);
+    });
+
     const wrap = $("tl-modes-wrap");
     if (!f.memberId) { wrap.innerHTML = ""; return; }
     const items = filteredExpenses();
@@ -1446,6 +1460,29 @@
     wrap.querySelectorAll("button").forEach((b) => {
       b.onclick = () => { f.mode = b.dataset.mode; renderTimeline(); };
     });
+  }
+
+  function setTlView(v) {
+    state.tlView = v;
+    try { localStorage.setItem("tripsplit_tlview", v); } catch (err) {}
+    renderTimeline();
+  }
+
+  // 요약 한 줄: 시각 · 내용 · 금액. 그 이상은 탭해서 본다.
+  // 시각과 금액을 고정폭으로 세워 금액 자리가 줄마다 흔들리지 않게 한다.
+  function briefRow(e, share) {
+    const b = document.createElement("button");
+    b.className = "tlb" + (e.settled ? " settled" : "");
+    b.dataset.id = e.id;
+    const krw = (share === undefined) ? rowKrw(e) : share;
+    const title = e.note || e.category || "지출";
+    // 영수증이 없는 줄만 표시가 붙는다 — 나중에 채워야 할 것이 한눈에 보이도록
+    const todo = (!e.receipt_path && !receiptColMissing) ? '<i class="tlb-todo"></i>' : "";
+    b.innerHTML = `<span class="tlb-t">${clockLabel(spentAt(e))}</span>
+      <span class="tlb-n">${todo}${escapeHtml(title)}</span>
+      <span class="tlb-a">${money(krw, "KRW")}</span>`;
+    b.onclick = () => openExpenseModal(e);
+    return b;
   }
 
   // one timeline row — order comes from the clock, so there is nothing to grab
@@ -1498,8 +1535,9 @@
 
       const zone = document.createElement("div");
       zone.className = "tl-rows";
+      const mk = state.tlView === "brief" ? briefRow : timelineRow;
       day.items.forEach((e) => zone.appendChild(
-        timelineRow(e, shareMode ? shareOf(e, state.filter.memberId) : undefined)));
+        mk(e, shareMode ? shareOf(e, state.filter.memberId) : undefined)));
       wrap.appendChild(zone);
       box.appendChild(wrap);
     });
@@ -2279,6 +2317,10 @@
 
   // ═══════════════════ BOOT ═══════════════════
   async function boot() {
+    try {
+      const v = localStorage.getItem("tripsplit_tlview");
+      if (v === "brief" || v === "full") state.tlView = v;
+    } catch (err) {}
     const params = new URLSearchParams(location.search);
     const roomId = params.get("r");
     await checkAccounts();

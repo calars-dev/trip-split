@@ -136,6 +136,29 @@
   .chip:active { transform: scale(0.95); }
   .chip-row.split .chip.sel::before { content: "✓ "; color: var(--accent); }
 
+  /* ── timeline: 요약 / 상세 ── */
+  .tl-view { display: inline-flex; background: var(--surface); border: 1px solid var(--line);
+             border-radius: 999px; padding: 3px; margin: 4px 0 12px; }
+  .tl-view button { font-size: 13px; font-weight: 700; color: var(--muted);
+                    padding: 6px 16px; border-radius: 999px; transition: all .15s; }
+  .tl-view button.on { background: var(--surface-2); color: var(--text); }
+
+  /* 요약 한 줄 — 시각과 금액이 고정폭이라 줄마다 자리가 흔들리지 않는다 */
+  .tlb { display: grid; grid-template-columns: 46px 1fr auto; gap: 10px;
+         align-items: baseline; width: 100%; text-align: left;
+         padding: 11px 2px; border-bottom: 1px solid var(--line); }
+  .tlb:last-child { border-bottom: none; }
+  .tlb:active { background: var(--surface); }
+  .tlb-t { font-size: 13px; color: var(--faint); font-variant-numeric: tabular-nums; }
+  .tlb-n { font-size: 15px; color: var(--text); overflow: hidden;
+           text-overflow: ellipsis; white-space: nowrap; }
+  .tlb-a { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums;
+           white-space: nowrap; }
+  .tlb.settled .tlb-n, .tlb.settled .tlb-a { color: var(--faint); }
+  /* 영수증이 아직 없는 줄에만 붙는 점 */
+  .tlb-todo { display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+              background: var(--warn); margin-right: 7px; vertical-align: middle; }
+
   /* ── status screen ── */
   .stat-hero { text-align: center; padding: 20px 0 24px; }
   .stat-hero .total { font-size: 38px; font-weight: 800; letter-spacing: -0.02em; }
@@ -626,6 +649,7 @@
       <button class="link-btn" id="go-status">정산 →</button>
     </div>
     <div class="tl-filters" id="tl-filters"></div>
+    <div class="tl-view" id="tl-view"></div>
     <div id="tl-modes-wrap"></div>
     <div id="tl-notice"></div>
     <div id="timeline"></div>

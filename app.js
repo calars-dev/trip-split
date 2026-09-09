@@ -333,7 +333,8 @@
   function removeRoomFromList(roomId) {
     localStorage.setItem(ROOMS_KEY, JSON.stringify(getSavedRooms().filter((r) => r.id !== roomId)));
   }
-  const goHome = () => { location.href = location.pathname; };
+  // 목록으로 갈 때는 아래 자동 이동에 다시 걸리지 않도록 표시를 달고 간다
+  const goHome = () => { location.href = location.pathname + "?home=1"; };
 
   // ── ownership (only the creating device can delete the trip) ──
   const ownerKey = (roomId) => "tripsplit_owner_" + roomId;
@@ -2347,6 +2348,16 @@
 
   // ═══════════════════ BOOT ═══════════════════
   async function boot() {
+    // 홈 화면 아이콘·북마크·주소 직접 입력은 ?r= 없이 들어온다. 그 상태로는 로그인
+    // 화면이 뜨는데, 이 기기가 이미 다녀온 여행이 있으면 거기로 보내는 편이 맞다.
+    // 목록을 일부러 보러 온 경우(?home=1)는 건드리지 않는다.
+    {
+      const q = new URLSearchParams(location.search);
+      if (!q.get("r") && !q.has("home")) {
+        const last = getSavedRooms()[0];
+        if (last && last.id) { location.replace(location.pathname + "?r=" + last.id); return; }
+      }
+    }
     try {
       const v = localStorage.getItem("tripsplit_tlview");
       if (v === "brief" || v === "full") state.tlView = v;

@@ -136,9 +136,13 @@
   .chip:active { transform: scale(0.95); }
   .chip-row.split .chip.sel::before { content: "✓ "; color: var(--accent); }
 
+  /* 총무가 아니면 누를 수 없는 줄 — 값은 보여주되 바꾸기 표시를 지운다 */
+  .startdate.readonly { opacity: .75; }
+
   /* ── timeline: 요약 / 상세 ── */
+  .tl-controls { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 12px; }
   .tl-view { display: inline-flex; background: var(--surface); border: 1px solid var(--line);
-             border-radius: 999px; padding: 3px; margin: 4px 0 12px; }
+             border-radius: 999px; padding: 3px; }
   .tl-view button { font-size: 13px; font-weight: 700; color: var(--muted);
                     padding: 6px 16px; border-radius: 999px; transition: all .15s; }
   .tl-view button.on { background: var(--surface-2); color: var(--text); }
@@ -649,7 +653,10 @@
       <button class="link-btn" id="go-status">정산 →</button>
     </div>
     <div class="tl-filters" id="tl-filters"></div>
-    <div class="tl-view" id="tl-view"></div>
+    <div class="tl-controls">
+      <div class="tl-view" id="tl-view"></div>
+      <div class="tl-view" id="tl-sort"></div>
+    </div>
     <div id="tl-modes-wrap"></div>
     <div id="tl-notice"></div>
     <div id="timeline"></div>

@@ -190,6 +190,9 @@
     // 요약: 한 줄에 시각·내용·금액만. 상세: 영수증 썸네일과 부가 정보까지.
     // 열네 명이 회비를 넣으면 상세는 열다섯 줄짜리 벽이 된다.
     tlView: "brief",
+    // 시간 순서. 기본은 오래된 것부터 — 여행이 흘러간 대로 읽힌다. 여행 중에는
+    // 방금 넣은 것을 확인하려고 열 때가 많아 최신순이 편하므로 고를 수 있게 뒀다.
+    tlSort: "asc",
   };
 
   const $ = (id) => document.getElementById(id);
@@ -1038,7 +1041,9 @@
     renderStartDate();
     renderLockRow();
     $("whoami-name").textContent = memberName(state.me);
-    $("delete-trip-btn").style.display = isOwner(state.room.id) ? "block" : "none";
+    // 만든 기기라도 총무가 아니면 안 보인다. 지우면 열네 명의 기록이 통째로 사라진다.
+    $("delete-trip-btn").style.display =
+      (isOwner(state.room.id) && iAmManager()) ? "block" : "none";
     $("settle-box").innerHTML = "";
     $("settle-btn").textContent = "🧮 정산하기";
   }
@@ -1048,6 +1053,10 @@
   // whenever nobody spent anything on the first day. So it stays editable.
   function renderStartDate() {
     const btn = $("startdate-btn");
+    // 날짜 자체는 모두가 봐야 한다 — 며칠차가 여기서 세어지니까. 고치는 것만 총무 몫.
+    const mine = iAmManager();
+    btn.classList.toggle("readonly", !mine);
+    btn.querySelector(".sd-edit").style.display = mine ? "" : "none";
     const s = startDate();
     if (s) {
       btn.classList.remove("unset");
@@ -1123,7 +1132,8 @@
   // ── 비밀번호 설정·변경 ──
   function renderLockRow() {
     const btn = $("lock-btn");
-    if (!hasPwCol) { btn.style.display = "none"; return; }
+    // 비밀번호는 방 전체를 잠그는 것이라 총무 말고는 아예 안 보여준다.
+    if (!hasPwCol || !iAmManager()) { btn.style.display = "none"; return; }
     btn.style.display = "flex";
     const locked = isLocked(state.room);
     btn.classList.toggle("unset", !locked);
@@ -1168,6 +1178,7 @@
 
   function deleteTrip() {
     if (!isOwner(state.room.id)) { toast("방을 만든 사람만 삭제할 수 있어요", true); return; }
+    if (!iAmManager()) { toast("여행 삭제는 총무만 할 수 있어요", true); return; }
     openConfirm(
       "이 여행을 삭제할까요?",
       `<b>${escapeHtml(state.room.name)}</b>의 모든 지출·멤버가 <b>모두에게서</b> 영구 삭제돼요. 되돌릴 수 없어요.`,
@@ -1408,12 +1419,15 @@
     const out = [];
     days.forEach((arr, key) => {
       arr.sort(byClock);
+      // 날짜 순서를 뒤집으면 그 안의 줄도 같이 뒤집혀야 "최신이 위"가 성립한다
+      if (state.tlSort === "desc") arr.reverse();
       // Deposits sit in the list but not in the total: a day bar is about how
       // much went out, and 7,000,000원 of trip fees would dwarf every real day.
       const total = arr.reduce((s, e) => s + (isDeposit(e) ? 0 : rowKrw(e)), 0);
       out.push({ key: key, when: spentAt(arr[0]), items: arr, total: total });
     });
-    out.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+    const dir = state.tlSort === "desc" ? -1 : 1;
+    out.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0) * dir);
     return out;
   }
 
@@ -1433,16 +1447,19 @@
         ((id) => () => { f.memberId = id; renderTimeline(); })(m.id)));
     });
 
-    // 보기 전환은 필터와 별개다 — 누구를 보든 어떻게 볼지는 따로 고른다
-    const vb = $("tl-view");
-    vb.innerHTML = "";
-    [["brief", "요약"], ["full", "상세"]].forEach(([k, label]) => {
-      const b = document.createElement("button");
-      b.className = state.tlView === k ? "on" : "";
-      b.textContent = label;
-      b.onclick = () => { setTlView(k); };
-      vb.appendChild(b);
-    });
+    // 보기와 정렬은 필터와 별개다 — 누구를 보든 어떻게 볼지는 따로 고른다
+    const seg = (host, opts, cur, set) => {
+      host.innerHTML = "";
+      opts.forEach(([k, label]) => {
+        const b = document.createElement("button");
+        b.className = cur === k ? "on" : "";
+        b.textContent = label;
+        b.onclick = () => set(k);
+        host.appendChild(b);
+      });
+    };
+    seg($("tl-view"), [["brief", "요약"], ["full", "상세"]], state.tlView, setTlView);
+    seg($("tl-sort"), [["asc", "오래된순"], ["desc", "최신순"]], state.tlSort, setTlSort);
 
     const wrap = $("tl-modes-wrap");
     if (!f.memberId) { wrap.innerHTML = ""; return; }
@@ -1465,6 +1482,11 @@
   function setTlView(v) {
     state.tlView = v;
     try { localStorage.setItem("tripsplit_tlview", v); } catch (err) {}
+    renderTimeline();
+  }
+  function setTlSort(v) {
+    state.tlSort = v;
+    try { localStorage.setItem("tripsplit_tlsort", v); } catch (err) {}
     renderTimeline();
   }
 
@@ -2320,6 +2342,8 @@
     try {
       const v = localStorage.getItem("tripsplit_tlview");
       if (v === "brief" || v === "full") state.tlView = v;
+      const s = localStorage.getItem("tripsplit_tlsort");
+      if (s === "asc" || s === "desc") state.tlSort = s;
     } catch (err) {}
     const params = new URLSearchParams(location.search);
     const roomId = params.get("r");
@@ -2544,7 +2568,10 @@
     // 정산에서 나가면 기록으로 — 들어온 길로 되돌아간다
     $("status-back").onclick = () => openTimeline(state.filter.memberId);
     $("go-history").onclick = () => openTimeline(null);
-    $("startdate-btn").onclick = openDateModal;
+    $("startdate-btn").onclick = () => {
+      if (!iAmManager()) { toast("여행 시작일은 총무만 바꿀 수 있어요", true); return; }
+      openDateModal();
+    };
     $("settle-btn").onclick = renderSettlement;
     $("member-add-btn").onclick = addMember;
     $("pot-add").onclick = addPot;

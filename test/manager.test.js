@@ -99,6 +99,10 @@ const vis = (w, id) => {
   ok("멤버 추가 줄이 보인다", vis(w, ".member-add"), "보임");
   ok("총무 안내는 숨어 있다", vis(w, "member-hint"), "숨김");
   ok("남의 자리에 삭제 버튼", w.document.querySelectorAll(".mem-del").length >= 1, true);
+  ok("시작일에 '바꾸기'가 보인다",
+    w.document.querySelector("#startdate-btn .sd-edit").style.display !== "none", true);
+  ok("시작일 줄이 읽기전용이 아니다",
+    w.document.getElementById("startdate-btn").classList.contains("readonly"), false);
 
   console.log("\n[총무 아님] 정원호");
   w = boot(fixture(), M.other);
@@ -115,6 +119,15 @@ const vis = (w, id) => {
   ok("안내 문구에 총무 이름",
     /이수형/.test(w.document.getElementById("member-hint").textContent), true);
   ok("삭제 버튼이 하나도 없다", w.document.querySelectorAll(".mem-del").length, 0);
+  // 날짜 자체는 보여야 한다 — 며칠차가 여기서 세어지니까. 고치는 것만 막는다.
+  ok("시작일 값은 그대로 보인다",
+    /여행 시작/.test(w.document.getElementById("startdate-text").textContent), true);
+  ok("'바꾸기' 표시는 사라진다",
+    w.document.querySelector("#startdate-btn .sd-edit").style.display, "none");
+  ok("읽기전용 표시가 붙는다",
+    w.document.getElementById("startdate-btn").classList.contains("readonly"), true);
+  ok("비밀번호 줄은 아예 안 보인다", vis(w, "lock-btn"), "숨김");
+  ok("여행 삭제 버튼도 없다", vis(w, "delete-trip-btn"), "숨김");
 
   console.log("\n[총무 미지정] 옛 방은 예전대로");
   // manager_id 가 없는 방까지 잠가버리면, 만든 사람도 못 고치는 방이 생긴다

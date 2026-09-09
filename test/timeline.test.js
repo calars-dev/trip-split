@@ -167,6 +167,24 @@ setTimeout(() => {
   check("엔화 행은 원화 환산도 같이", txt(days2[2].querySelector(".exp-krw")), "≈₩10,920");
   check("고른 보기는 기억된다", w.localStorage.getItem("tripsplit_tlview"), "full");
 
+  console.log("\n[타임라인] 정렬");
+  [...$("tl-view").children].find((b) => txt(b) === "요약").click();
+  check("기본은 오래된순", [...$("tl-sort").children].filter((b) => b.className === "on").map(txt), ["오래된순"]);
+  const dayNames = () => [...doc.querySelectorAll("#timeline .tl-day-num")].map(txt);
+  const firstRows = () => [...doc.querySelectorAll("#timeline .tl-day")][0].querySelectorAll(".tlb-t");
+  check("오래된순 날짜", dayNames(), ["7월 20일 (월)", "8월 1일 (토)", "8월 3일 (월)"]);
+
+  [...$("tl-sort").children].find((b) => txt(b) === "최신순").click();
+  check("최신순으로 바뀜", [...$("tl-sort").children].filter((b) => b.className === "on").map(txt), ["최신순"]);
+  check("날짜가 뒤집힘", dayNames(), ["8월 3일 (월)", "8월 1일 (토)", "7월 20일 (월)"]);
+  // 날짜만 뒤집고 그 안을 그대로 두면 "최신이 위"가 하루 안에서 깨진다
+  check("하루 안쪽도 뒤집힘",
+    [...[...doc.querySelectorAll("#timeline .tl-day")][1].querySelectorAll(".tlb-t")].map(txt),
+    ["22:00", "12:30", "12:05", "08:10"]);
+  check("정렬도 기억된다", w.localStorage.getItem("tripsplit_tlsort"), "desc");
+  [...$("tl-sort").children].find((b) => txt(b) === "오래된순").click();
+  check("되돌리면 원래대로", dayNames(), ["7월 20일 (월)", "8월 1일 (토)", "8월 3일 (월)"]);
+
   console.log("\n[타임라인] 멤버 필터");
   const chips = [...$("tl-filters").children];
   check("필터 칩 = 전체 + 멤버 3명", chips.map((c) => c.textContent), ["전체", "민수", "지현", "영훈"]);

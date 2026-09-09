@@ -2392,8 +2392,17 @@
       show("screen-offline");
       return;
     }
-    // Invited by link but not in the trip yet: the row policy hides it, so ask
-    // the server what it's called and who is still unclaimed.
+    // Signed in, but this account holds no seat in this trip — so the row policy
+    // hides the room and we land here. It happens to anyone whose old account
+    // was unlinked from its seat, and it used to drop them on the claim modal,
+    // which lists only *unclaimed* seats and offers "목록에 없어요 (새로 참여)".
+    // Someone whose own name was missing from that list would take the bait and
+    // become a fourteenth-and-a-half member. Send them to the birthday screen
+    // instead: it shows all fourteen names, and typing four digits puts them
+    // back in the seat that is already theirs.
+    if (!room && accountsReady && me && await openJoin(roomId)) return;
+
+    // Only if the birthday screen can't help (a trip with no birthdays on it).
     if (!room && accountsReady && me) {
       const peek = await sb.rpc("room_peek", { p_room: roomId });
       if (peek.data) {

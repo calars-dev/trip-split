@@ -634,6 +634,20 @@
     <div class="loading">불러오는 중…</div>
   </section>
 
+  <!-- Couldn't reach the server while opening a trip link. Anything that sends
+       people onward from here — the create form especially — invites a second,
+       duplicate trip to be made on a bad connection. -->
+  <section id="screen-offline" class="screen">
+    <div class="center-col">
+      <div>
+        <div class="hero-title">📡 연결이 안 돼요</div>
+        <div class="hero-sub" id="offline-sub">신호가 약한 곳인지 확인하고 다시 눌러주세요.</div>
+      </div>
+      <button id="offline-retry" class="primary">다시 시도</button>
+      <div class="msub" style="text-align:center">여행 방은 그대로 있어요. 새로 만들지 마세요.</div>
+    </div>
+  </section>
+
 </div>
 
 <div id="toast"></div>

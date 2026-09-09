@@ -2370,9 +2370,15 @@
     let room;
     try { room = await loadRoom(roomId); }
     catch (err) {
-      toast("연결 오류: " + (err && err.message ? err.message : err), true);
-      $("create-start").value = todayStr();
-      show("screen-create");
+      // Never hand someone the create-a-trip form here. They arrived on a link
+      // to a trip that exists; the only thing that failed is the network. The
+      // old behaviour put an empty "새 여행 방을 만들어요" in front of them with
+      // no way back, which on airport wifi is an invitation to start a second
+      // trip that half the group then joins.
+      $("offline-sub").textContent =
+        "신호가 약한 곳인지 확인하고 다시 눌러주세요. (" +
+        (err && err.message ? err.message : err) + ")";
+      show("screen-offline");
       return;
     }
     // Invited by link but not in the trip yet: the row policy hides it, so ask
@@ -2486,6 +2492,8 @@
     $("auth-pw").addEventListener("keydown", (e) => { if (e.key === "Enter" && authMode === "in") submitAuth(); });
     $("auth-a").addEventListener("keydown", (e) => { if (e.key === "Enter") submitAuth(); });
     $("auth-forgot").onclick = openForgot;
+
+    $("offline-retry").onclick = () => location.reload();
 
     $("join-go").onclick = submitJoin;
     $("join-birth").addEventListener("keydown", (e) => { if (e.key === "Enter") submitJoin(); });

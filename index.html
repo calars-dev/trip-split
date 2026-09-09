@@ -173,7 +173,8 @@
   .exp-krw { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .exp-item.settled { opacity: .5; }
   .exp-item.settled .exp-amt { text-decoration: line-through; }
-  .exp-badge { color: var(--pos); font-weight: 700; }
+  /* "영수증 없음" split across two lines mid-word without this */
+  .exp-badge { color: var(--pos); font-weight: 700; white-space: nowrap; }
   .exp-badge.todo { color: var(--warn); }
   .exp-est { color: var(--warn); font-weight: 700; }
 

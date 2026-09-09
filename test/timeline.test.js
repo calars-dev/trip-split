@@ -21,19 +21,22 @@ let n = 0;
 const exp = (o) => Object.assign({
   id: "e" + (++n), room_id: ROOM, currency: "KRW", settled: false,
   rate_krw: null, rate_date: null, rate_source: null,
-  participant_ids: ALL, created_at: "2026-08-0" + (o.day_index || 1) + "T0" + (n % 9) + ":00:00Z",
+  participant_ids: ALL, created_at: "2026-08-01T0" + (n % 9) + ":00:00Z",
 }, o);
+// spent_at is the only thing that decides where a row lands and in what order.
+// Local time, no Z — the app reads these back as local instants.
 const expenses = [
-  exp({ payer_id: M.a, amount: 640000, category: "기타", note: "항공권", day_index: 0, slot: null, seq: 0 }),
-  exp({ payer_id: M.b, amount: 40000,  category: "기타", note: "유심",   day_index: 0, slot: null, seq: 1 }),
-  // day 1 — deliberately out of order to prove sorting works
-  exp({ payer_id: M.a, amount: 38000, category: "술",   note: "이자카야", day_index: 1, slot: "밤",   seq: 0 }),
-  exp({ payer_id: M.b, amount: 12000, category: "식비", note: "라멘",     day_index: 1, slot: "점심", seq: 1 }),
-  exp({ payer_id: M.a, amount: 4500,  category: "식비", note: "삼각김밥", day_index: 1, slot: "아침", seq: 0 }),
-  exp({ payer_id: M.c, amount: 9000,  category: "카페", note: "커피",     day_index: 1, slot: "점심", seq: 0 }),
-  // day 3 — day 2 is skipped on purpose (a day with no spending)
+  // before the trip — one calendar day of its own
+  exp({ payer_id: M.a, amount: 640000, category: "기타", note: "항공권", spent_at: "2026-07-20T14:00:00" }),
+  exp({ payer_id: M.b, amount: 40000,  category: "기타", note: "유심",   spent_at: "2026-07-20T16:30:00" }),
+  // 8/1 — deliberately out of order to prove sorting works
+  exp({ payer_id: M.a, amount: 38000, category: "술",   note: "이자카야", spent_at: "2026-08-01T22:00:00" }),
+  exp({ payer_id: M.b, amount: 12000, category: "식비", note: "라멘",     spent_at: "2026-08-01T12:30:00" }),
+  exp({ payer_id: M.a, amount: 4500,  category: "식비", note: "삼각김밥", spent_at: "2026-08-01T08:10:00" }),
+  exp({ payer_id: M.c, amount: 9000,  category: "카페", note: "커피",     spent_at: "2026-08-01T12:05:00" }),
+  // 8/3 — 8/2 is skipped on purpose (a day with no spending)
   exp({ payer_id: M.c, amount: 1200, currency: "JPY", rate_krw: 9.1, rate_date: "2026-08-03",
-        rate_source: "api", category: "식비", note: "우동", day_index: 3, slot: "점심", seq: 0 }),
+        rate_source: "api", category: "식비", note: "우동", spent_at: "2026-08-03T12:40:00" }),
 ];
 
 // ── fake supabase ──────────────────────────────────────────────────
@@ -102,51 +105,53 @@ w.eval(fs.readFileSync(path.join(APP, "app.js"), "utf8"));
 setTimeout(() => {
   const doc = w.document;
 
-  console.log("\n[입력 화면] 일차·시간대 기본값");
-  check("현재 시각(8/3 19:30) 기준으로 채워짐", txt($("when-text")), "3일차 · 🌆저녁 19시 8/3 (월)");
-  check("일차 칩은 준비 + 1~4일차 (오늘 3일차 +1)",
-    [...$("day-chips").children].map((b) => b.textContent),
-    ["🎒 준비", "1일차", "2일차", "3일차", "4일차"]);
-  check("시간대 칩 5개", [...$("slot-chips").children].map((b) => b.textContent),
-    ["🌅 아침", "🍜 점심", "☀️ 오후", "🌆 저녁", "🌙 밤"]);
-  // 시각 칩은 고른 시간대에 속한 것만 — 24개를 다 깔면 저장 버튼이 화면 밖으로 밀린다
-  check("저녁 시각 칩은 17~20시", [...$("hour-chips").children].map((b) => b.textContent),
-    ["17시", "18시", "19시", "20시"]);
-  check("지금 시각이 골라져 있음",
-    [...$("hour-chips").children].filter((b) => b.className.includes("sel")).map((b) => b.textContent),
-    ["19시"]);
+  console.log("\n[입력 화면] 시각 기본값");
+  // 칩 세 줄(며칠차·시간대·몇 시쯤) 대신 시각 하나. 기본값은 지금.
+  check("현재 시각(8/3 19:30)이 그대로 채워짐", txt($("when-text")), "19:30 8월 3일 (월) 3일차");
+  check("datetime 입력칸도 같은 값", $("when-input").value, "2026-08-03T19:30");
+  check("옛 칩들은 사라짐",
+    [$("day-chips"), $("slot-chips"), $("hour-chips")].map((el) => el === null), [true, true, true]);
 
-  // 시간대를 바꾸면 시각도 그 안으로 따라온다 — "저녁 14시"가 생길 수 없다
-  [...$("slot-chips").children][0].click(); // 아침
-  check("아침으로 바꾸면 시각도 아침 범위로", txt($("when-text")), "3일차 · 🌅아침 5시 8/3 (월)");
-  check("아침 시각 칩은 5~9시", [...$("hour-chips").children].map((b) => b.textContent),
-    ["5시", "6시", "7시", "8시", "9시"]);
+  // 빠른 보정 - "20분 전이었는데" 가 대부분이라 달력을 여는 것보다 빠르다
+  $("when-m30").click();
+  check("-30분", txt($("when-text")), "19:00 8월 3일 (월) 3일차");
+  $("when-m60").click();
+  check("-1시간", txt($("when-text")), "18:00 8월 3일 (월) 3일차");
+  $("when-m1d").click();
+  check("-1일은 날짜와 일차가 같이 움직임", txt($("when-text")), "18:00 8월 2일 (일) 2일차");
+  $("when-now").click();
+  check("지금으로 되돌리기", txt($("when-text")), "19:30 8월 3일 (월) 3일차");
 
-  // 반대 방향도 성립한다
-  [...$("hour-chips").children][4].click(); // 9시
-  check("9시는 아침 그대로", txt($("when-text")), "3일차 · 🌅아침 9시 8/3 (월)");
-  [...$("slot-chips").children][3].click(); // 저녁으로 되돌림
-  [...$("hour-chips").children][2].click(); // 19시
+  // 직접 친 값이 그대로 반영된다
+  $("when-input").value = "2026-08-01T09:05";
+  $("when-input").dispatchEvent(new w.Event("input", { bubbles: true }));
+  check("직접 입력", txt($("when-text")), "09:05 8월 1일 (토) 1일차");
+  $("when-now").click();
 
-  console.log("\n[현황 화면] 시작일");
+  console.log("\n[화면 순서] 입력 -> 기록 -> 정산");
+  // 기록이 앞이고 잔액(정산)은 그 뒤다. 매일 보는 건 기록이라서.
+  $("go-history").click();
+  check("입력에서 기록으로", doc.querySelector(".screen.active").id, "screen-history");
+  $("go-status").click();
+  check("기록에서 정산으로", doc.querySelector(".screen.active").id, "screen-status");
   check("시작일 표시", txt($("startdate-text")), "여행 시작 8월 1일 (토)");
   check("잔액 행이 탭 가능", doc.querySelectorAll(".bal-row.tappable").length, 3);
+  $("status-back").click();
+  check("정산에서 나가면 기록으로", doc.querySelector(".screen.active").id, "screen-history");
 
-  // open the timeline
-  $("go-history").click();
-
-  console.log("\n[타임라인] 묶음과 순서");
+  console.log("\n[타임라인] 날짜별 묶음과 시계 순서");
   const days = [...doc.querySelectorAll("#timeline .tl-day")];
-  check("일차 묶음 3개 (준비/1일차/3일차 — 지출 없는 2일차는 안 나옴)", days.length, 3);
-  check("일차 헤더", days.map((d) => txt(d.querySelector(".tl-day-num")) + " " + txt(d.querySelector(".tl-day-date"))),
-    ["🎒 여행 전 준비 ", "1일차 8/1 (토)", "3일차 8/3 (월)"]);
-  check("일차별 합계", days.map((d) => txt(d.querySelector(".tl-day-total"))),
+  check("날짜 묶음 3개 (7/20, 8/1, 8/3 - 지출 없는 8/2는 안 나옴)", days.length, 3);
+  check("날짜 헤더", days.map((d) => txt(d.querySelector(".tl-day-num")) + " " + txt(d.querySelector(".tl-day-date"))),
+    ["7월 20일 (월) 여행 전", "8월 1일 (토) 1일차", "8월 3일 (월) 3일차"]);
+  check("날짜별 합계", days.map((d) => txt(d.querySelector(".tl-day-total"))),
     ["₩680,000", "₩63,500", "₩10,920"]);
-  check("준비 묶음엔 시간대 스파인이 없음", days[0].querySelectorAll(".tl-slot").length, 0);
-  check("1일차 시간대 순서 (아침→점심→밤)",
-    [...days[1].querySelectorAll(".tl-slot-name")].map(txt), ["아침", "점심", "밤"]);
-  check("같은 점심 안에서는 seq 순서 (커피 seq0 → 라멘 seq1)",
-    [...days[1].querySelectorAll(".tl-slot")[1].querySelectorAll(".exp-title")].map(txt), ["커피", "라멘"]);
+  check("시간대 스파인은 사라짐", doc.querySelectorAll(".tl-slot").length, 0);
+  check("8/1은 시계 순서 (08:10 -> 12:05 -> 12:30 -> 22:00)",
+    [...days[1].querySelectorAll(".exp-title")].map(txt), ["삼각김밥", "커피", "라멘", "이자카야"]);
+  check("행마다 몇 시 몇 분인지 보임",
+    [...days[1].querySelectorAll(".exp-sub")].map((e) => txt(e).split(" ")[0]),
+    ["08:10", "12:05", "12:30", "22:00"]);
   check("막대는 가장 많이 쓴 날이 100%",
     days.map((d) => d.querySelector(".tl-bar i").style.width), ["100%", "9%", "2%"]);
   check("엔화 행은 원화 환산도 같이", txt(days[2].querySelector(".exp-krw")), "≈₩10,920");

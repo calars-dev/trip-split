@@ -38,7 +38,7 @@
   // rate migration was never run here, for instance. So ask for everything and
   // drop whatever it says it lacks, once, then remember.
   let roomCols = ["id", "name", "default_currency", "start_date", "day_count",
-                  "base_rate_jpy", "base_rate_date", "has_pw", "created_at"];
+                  "manager_id", "base_rate_jpy", "base_rate_date", "has_pw", "created_at"];
   let hasPwCol = true;
   async function roomQuery(build) {
     for (let i = 0; i <= roomCols.length; i++) {
@@ -117,15 +117,10 @@
 
   // ── day / slot ──
   // An expense carries the day of the trip it belongs to, not a calendar date:
-  // "3일차 저녁" is what people actually remember. Day 0 is everything bought
-  // before leaving (flights, accommodation, gear).
-  const SLOTS = [
-    { key: "아침", emoji: "🌅" }, { key: "점심", emoji: "🍜" },
-    { key: "오후", emoji: "☀️" }, { key: "저녁", emoji: "🌆" },
-    { key: "밤",   emoji: "🌙" },
-  ];
-  const SLOT_EMOJI = Object.fromEntries(SLOTS.map((s) => [s.key, s.emoji]));
-  const SLOT_ORDER = Object.fromEntries(SLOTS.map((s, i) => [s.key, i]));
+  // When something was spent is one instant, not a day bucket plus a vague
+  // "저녁". `spent_at` holds it; everything else on screen is derived from it.
+  // The old day_index / slot / hour columns are still written for one release so
+  // a rollback has somewhere to land, but nothing reads them any more.
   const PREP_DAY = 0;
   const MAX_DAY_CHIPS = 60; // guard: a wildly wrong start date shouldn't spawn 500 chips
 
@@ -531,9 +526,6 @@
   // ═══════════════════ DAY / SLOT ═══════════════════
   const WEEKDAY = ["일", "월", "화", "수", "목", "금", "토"];
   const dayOf = (e) => (typeof e.day_index === "number" ? e.day_index : null);
-  const slotKeyOf = (e) => e.slot || null;
-  const slotRank = (s) => (s in SLOT_ORDER ? SLOT_ORDER[s] : 99);
-  const dayRank = (d) => (d === null ? 1e9 : d); // unassigned rows sink to the bottom
 
   // "2026-08-01" -> local midnight. `new Date(str)` would parse it as UTC and
   // shift the whole trip by a day for anyone east of Greenwich.
@@ -554,62 +546,73 @@
     return d;
   }
   const dayLabel = (i) => (i === PREP_DAY ? "여행 전 준비" : i + "일차");
-  function dayDateLabel(i) {
-    const d = dateOfDay(i);
-    return d ? `${d.getMonth() + 1}/${d.getDate()} (${WEEKDAY[d.getDay()]})` : "";
+  // ── 총무 ──
+  // Adding and removing members, and spending from the pot, belong to one
+  // person. Fourteen people each nudging the pot turns a ledger into graffiti.
+  //
+  // ⚠️ This hides controls; it does not enforce anything. Any member of the room
+  //    can still write whatever they like through the API — the app has always
+  //    been "whoever has the link can edit." It stops accidents, not intent.
+  function managerId() {
+    const m = state.room && state.room.manager_id;
+    return m || null;
+  }
+  // With no manager recorded (an older room), everyone keeps the old freedom
+  // rather than everyone losing it.
+  function iAmManager() {
+    const mid = managerId();
+    return !mid || (state.me && state.me === mid);
   }
 
-  // which day of the trip is it right now? day 1 until a start date exists
-  // A night out that runs past midnight is still that night. The trip day turns
-  // over at 6am, not at 00:00, so a 2시 bar tab lands on the day it started.
-  const DAY_CUTOFF_HOUR = 6;
-  function todayDayIndex() {
+  // ── the clock ──
+  // One instant per expense. Everything the screen shows about "when" comes out
+  // of here, so there is exactly one thing to get right.
+  let spentAtColMissing = false;
+  const isMissingSpentCol = (err) => !!err && /spent_at/.test(err.message || "");
+
+  // Falls back through the old columns so a database that predates the
+  // migration still sorts and groups sensibly instead of collapsing to one heap.
+  function spentAt(e) {
+    if (e && e.spent_at) return new Date(e.spent_at);
+    if (e && typeof e.day_index === "number" && e.day_index > 0) {
+      const d = dateOfDay(e.day_index);
+      if (d) { d.setHours(typeof e.hour === "number" ? e.hour : 12, 0, 0, 0); return d; }
+    }
+    return e && e.created_at ? new Date(e.created_at) : new Date(0);
+  }
+  const two = (n) => String(n).padStart(2, "0");
+  const clockLabel = (dt) => `${two(dt.getHours())}:${two(dt.getMinutes())}`;
+  // Local date key — never toISOString(), which would shift an evening in Seoul
+  // onto the previous day.
+  const dateKey = (dt) => `${dt.getFullYear()}-${two(dt.getMonth() + 1)}-${two(dt.getDate())}`;
+  // <input type="datetime-local"> wants local time with no zone suffix.
+  const toLocalInput = (dt) => `${dateKey(dt)}T${clockLabel(dt)}`;
+  const fromLocalInput = (s) => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(s || "");
+    if (!m) return null;
+    return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], 0, 0);
+  };
+
+  // "9월 14일 (월)" — and which day of the trip that is, when a start date exists.
+  function dayNumberOf(dt) {
     const s = startDate();
-    if (!s) return 1;
-    const now = new Date();
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    if (now.getHours() < DAY_CUTOFF_HOUR) today.setDate(today.getDate() - 1);
-    const diff = Math.round((today - s) / 86400000) + 1;
+    if (!s || !dt) return null;
+    const a = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate());
+    const diff = Math.round((a - s) / 86400000) + 1;
     return diff < 1 ? PREP_DAY : Math.min(diff, MAX_DAY_CHIPS);
   }
-  function slotOfHour(h) {
-    if (h >= 5 && h < 10) return "아침";
-    if (h >= 10 && h < 14) return "점심";
-    if (h >= 14 && h < 17) return "오후";
-    if (h >= 17 && h < 21) return "저녁";
-    return "밤";
+  function dateHeading(dt) {
+    return `${dt.getMonth() + 1}월 ${dt.getDate()}일 (${WEEKDAY[dt.getDay()]})`;
   }
-  // Only the hours that belong to the chosen slot are offered. Twenty-four chips
-  // pushed the save button off a phone screen, and they let "저녁 14시" exist.
-  const SLOT_HOURS = {
-    "아침": [5, 6, 7, 8, 9], "점심": [10, 11, 12, 13], "오후": [14, 15, 16],
-    "저녁": [17, 18, 19, 20], "밤": [21, 22, 23, 0, 1, 2, 3, 4],
-  };
-  function slotNow() { return slotOfHour(new Date().getHours()); }
-  const hourOf = (e) => (typeof e.hour === "number" ? e.hour : null);
-  // how far the day picker runs: today, or the latest day already logged
-  function lastDayIndex() {
-    let max = 1;
-    state.expenses.forEach((e) => { if (dayOf(e) > max) max = e.day_index; });
-    return Math.min(Math.max(max, todayDayIndex()), MAX_DAY_CHIPS);
+  function dayTag(dt) {
+    const n = dayNumberOf(dt);
+    if (n === null) return "";
+    return n === PREP_DAY ? "여행 전" : n + "일차";
   }
-  // next order number inside a (day, slot) bucket
-  function nextSeq(dayIndex, slot) {
-    let max = -1;
-    state.expenses.forEach((e) => {
-      if (e.day_index === dayIndex && e.slot === slot && typeof e.seq === "number" && e.seq > max) max = e.seq;
-    });
-    return max + 1;
-  }
-  // Small hours belong to the end of the night they started, not the front of
-  // the morning: 밤 runs 21시 → 23시 → 0시 → 2시, so 2시 must rank after 23시.
-  const clockRank = (h) => (h === null ? 99 : (h < 5 ? h + 24 : h));
-  // The clock decides the order — there is nothing to drag and nothing to
-  // renumber. Two rows on the same hour fall back to when they were entered.
+  // The instant decides the order. Two expenses on the same minute fall back to
+  // when they were entered, so the list never reshuffles between renders.
   const byClock = (a, b) =>
-    clockRank(hourOf(a)) - clockRank(hourOf(b))
-    || (a.seq || 0) - (b.seq || 0)
-    || (new Date(a.created_at) - new Date(b.created_at));
+    (spentAt(a) - spentAt(b)) || (new Date(a.created_at) - new Date(b.created_at));
   // one member's share of an expense in KRW — same rounding rule as computeSettlement,
   // so the filter total and the settlement figure never disagree by a won or two
   function shareOf(e, memberId) {
@@ -755,16 +758,11 @@
       rateKrw: null,
       rateDate: null,
       rateSource: null,
-      // when it was spent — prefilled from the clock, changeable by tapping
-      dayIndex: todayDayIndex(),
-      slot: slotNow(),
-      hour: new Date().getHours(),
+      // when it was spent — now, unless someone picks a different time
+      spentAt: new Date(),
       // Until someone picks a time themselves, the clock keeps the draft current
       // — an app left open since lunch must not stamp lunch on a dinner receipt.
       whenTouched: false,
-      seq: null,
-      origDayIndex: null,
-      origSlot: null,
       // receipt: `shot` is a freshly picked photo, `receiptPath` one already stored
       shot: null,
       receiptPath: null,
@@ -845,46 +843,39 @@
   function renderWhen() {
     if (!state.draft) return;
     const d = state.draft;
-    // "여행 전 준비" has no time of day — nobody remembers when they booked a flight
-    const isPrep = d.dayIndex === PREP_DAY;
-    $("slot-wrap").style.display = isPrep ? "none" : "block";
-    const hourTxt = (!isPrep && typeof d.hour === "number") ? ` ${d.hour}시` : "";
-    $("when-text").innerHTML = `<b>${dayLabel(d.dayIndex)}</b>`
-      + (isPrep ? "" : ` · ${SLOT_EMOJI[d.slot] || ""}${d.slot}${hourTxt}`
-                     + ` <span style="color:var(--faint)">${dayDateLabel(d.dayIndex)}</span>`);
+    const dt = d.spentAt || new Date();
+    const tag = dayTag(dt);
+    $("when-text").innerHTML =
+      `<b>${clockLabel(dt)}</b> <span style="color:var(--muted)">${dateHeading(dt)}</span>`
+      + (tag ? ` <span style="color:var(--faint)">${tag}</span>` : "");
+    const inp = $("when-input");
+    // Only write into the field when it disagrees — assigning on every render
+    // would fight the user mid-edit and reset the caret.
+    const want = toLocalInput(dt);
+    if (inp.value !== want) inp.value = want;
+  }
 
-    const dc = $("day-chips"); dc.innerHTML = "";
-    dc.appendChild(chip("🎒 준비", d.dayIndex === PREP_DAY,
-      () => { d.dayIndex = PREP_DAY; d.whenTouched = true; renderWhen(); }));
-    // One day past the furthest we know about, so tomorrow can be logged in
-    // advance — and the whole trip when its length is known, so a day-four tour
-    // booked from home has a chip to land on before anyone has left.
-    const known = Number(state.room && state.room.day_count) || 0;
-    const upto = Math.min(Math.max(lastDayIndex() + 1, known), MAX_DAY_CHIPS);
-    for (let i = 1; i <= upto; i++) {
-      dc.appendChild(chip(i + "일차", d.dayIndex === i,
-        ((n) => () => { d.dayIndex = n; d.whenTouched = true; renderWhen(); })(i)));
-    }
-
-    const sc = $("slot-chips"); sc.innerHTML = "";
-    SLOTS.forEach((s) => {
-      sc.appendChild(chip(s.emoji + " " + s.key, d.slot === s.key, () => {
-        d.slot = s.key;
-        // Moving the slot moves the hour with it, or the row would claim to be
-        // "저녁 14시". Staying put when the hour already fits keeps a correction
-        // to the slot from throwing away a time the user chose on purpose.
-        const hours = SLOT_HOURS[s.key] || [];
-        if (hours.indexOf(d.hour) < 0) d.hour = hours[0];
-        d.whenTouched = true;
-        renderWhen();
-      }));
-    });
-
-    const hc = $("hour-chips"); hc.innerHTML = "";
-    (SLOT_HOURS[d.slot] || []).forEach((h) => {
-      hc.appendChild(chip(h + "시", d.hour === h,
-        ((n) => () => { d.hour = n; d.slot = slotOfHour(n); d.whenTouched = true; renderWhen(); })(h)));
-    });
+  // The field is the truth while it holds a valid instant. A half-typed date is
+  // ignored rather than snapped to something wrong.
+  function onWhenInput() {
+    const dt = fromLocalInput($("when-input").value);
+    if (!dt) return;
+    state.draft.spentAt = dt;
+    state.draft.whenTouched = true;
+    renderWhen();
+  }
+  function setWhenNow() {
+    state.draft.spentAt = new Date();
+    state.draft.whenTouched = false;   // back under the clock's care
+    renderWhen();
+  }
+  // Nudge by whole minutes — for "it was about twenty minutes ago", which is
+  // most corrections, and which a date picker makes needlessly slow.
+  function nudgeWhen(mins) {
+    const d = state.draft;
+    d.spentAt = new Date((d.spentAt || new Date()).getTime() + mins * 60000);
+    d.whenTouched = true;
+    renderWhen();
   }
 
   // Re-read the clock for a draft nobody has dated by hand. Called when the
@@ -893,10 +884,7 @@
   function refreshDraftClock() {
     const d = state.draft;
     if (!d || d.editingId || d.whenTouched) return;
-    const now = new Date();
-    d.dayIndex = todayDayIndex();
-    d.slot = slotNow();
-    d.hour = now.getHours();
+    d.spentAt = new Date();
     renderWhen();
   }
 
@@ -922,6 +910,9 @@
     // payer chips
     const pc = $("payer-chips"); pc.innerHTML = "";
     state.members.forEach((m) => {
+      // The pot is the trip's shared wallet; only the person holding it files
+      // against it. Everyone else sees people, which is all they need.
+      if (isLedger(m) && !iAmManager()) return;
       const b = document.createElement("button");
       b.className = "chip" + (m.id === d.payerId ? " sel" : "");
       b.textContent = m.name;
@@ -1075,41 +1066,11 @@
   // Day 1 always means the start date. So when the start date moves, every
   // expense stays on the calendar day it actually happened and its day *number*
   // shifts instead. Anything that ends up before the new start becomes prep.
-  async function shiftDays(from, to) {
-    const a = parseYmd(from), b = parseYmd(to);
-    if (!a || !b) return { delta: 0 };
-    const delta = Math.round((b - a) / 86400000);
-    if (!delta) return { delta: 0 };
-
-    const days = [];
-    state.expenses.forEach((e) => {
-      const d = dayOf(e);
-      if (d > 0 && days.indexOf(d) < 0) days.push(d);
-    });
-    // walk in the direction that never writes onto a day we still have to read
-    days.sort((x, y) => (delta > 0 ? x - y : y - x));
-    for (let i = 0; i < days.length; i++) {
-      const d = days[i], target = Math.max(0, d - delta);
-      if (target === d) continue;
-      // prep has no time of day, so drop the slot on the way in
-      const patch = target === PREP_DAY ? { day_index: PREP_DAY, slot: null } : { day_index: target };
-      const { error } = await sb.from("expenses").update(patch)
-        .eq("room_id", state.room.id).eq("day_index", d);
-      if (error) return { delta: 0, error: error };
-    }
-    return { delta: delta };
-  }
-
-  // Several days can collapse into prep at once, and their seq numbers collide
-  // when they land. Renumber that bucket by when each expense was entered.
-  async function renumberPrep() {
-    const prep = state.expenses
-      .filter((e) => dayOf(e) === PREP_DAY)
-      .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
-    for (let i = 0; i < prep.length; i++) {
-      if (prep[i].seq !== i) await sb.from("expenses").update({ seq: i }).eq("id", prep[i].id);
-    }
-  }
+  // Moving the start date used to rewrite every expense's day_index, walking the
+  // days in the safe direction and renumbering the prep bucket afterwards. An
+  // expense now carries the instant it happened, so the start date only changes
+  // what the headings are counted from — nothing is written, nothing can go wrong
+  // halfway through.
 
   async function saveStartDate() {
     const v = $("date-input").value;
@@ -1151,17 +1112,8 @@
     }
     state.room.start_date = v;
 
-    let moved = 0;
-    if (prev) {
-      const r = await shiftDays(prev, v);
-      if (r.error) { toast("일차 이동 실패: " + r.error.message, true); await refetch(); return; }
-      moved = r.delta;
-      if (moved) { await refetch(); await renumberPrep(); }
-    }
-    if (state.draft && !state.draft.editingId) state.draft.dayIndex = todayDayIndex();
-    toast(moved
-      ? `시작일 변경 · 일차 ${Math.abs(moved)}칸 ${moved > 0 ? "당겨짐" : "밀림"}`
-      : "시작일 저장됨");
+    toast("시작일 저장됨 — 일차 번호만 다시 셉니다");
+    if (state.draft) renderWhen();
     await refetch();
   }
 
@@ -1242,7 +1194,9 @@
       row.className = "mem-row";
       const meTag = m.id === state.me ? `<span class="me-tag">나</span>` : "";
       let right;
-      if (m.id === state.me) {
+      if (!iAmManager()) {
+        right = `<span class="mem-locked">${m.id === state.me ? "본인" : ""}</span>`;
+      } else if (m.id === state.me) {
         right = `<span class="mem-locked">본인</span>`;
       } else if (memberHasExpenses(m.id)) {
         right = `<span class="mem-locked">지출 있음</span>`;
@@ -1265,7 +1219,18 @@
     });
     // Offered only while the room has no pot: a second one would split the
     // balance in two and only the first would ever be shown.
-    $("pot-add").style.display = state.members.some(isLedger) ? "none" : "block";
+    const mine = iAmManager();
+    $("pot-add").style.display = (!mine || state.members.some(isLedger)) ? "none" : "block";
+    // The add row goes away entirely rather than greying out — a disabled field
+    // invites a tap and then explains nothing.
+    const add = document.querySelector(".member-add");
+    if (add) add.style.display = mine ? "" : "none";
+    const hint = $("member-hint");
+    if (hint) {
+      hint.style.display = mine ? "none" : "block";
+      hint.textContent = "멤버 추가·삭제는 총무" +
+        (managerId() ? "(" + memberName(managerId()) + ")" : "") + "만 할 수 있어요.";
+    }
   }
 
   async function addMember() {
@@ -1368,7 +1333,7 @@
       ${tile}
       <span class="exp-mid">
         <span class="exp-title">${e.note ? escapeHtml(e.note) : (e.category || "지출")}</span>
-        <span class="exp-sub">${hourOf(e) === null ? "" : hourOf(e) + "시 · "}${escapeHtml(memberName(e.payer_id))} 냄 · ${parts.length}명${badge}${est}</span>
+        <span class="exp-sub">${clockLabel(spentAt(e))} · ${escapeHtml(memberName(e.payer_id))} 냄 · ${parts.length}명${badge}${est}</span>
       </span>
       <span class="exp-amt-col">${amtCol}</span>`;
     item.onclick = () => openExpenseModal(e);
@@ -1427,27 +1392,25 @@
   }
 
   // -> [{ dayIndex, total, slots: [{ slot, items }] }], earliest day first
+  // One bucket per calendar day, newest last, each already in clock order.
+  // Slots are gone: a heading that says the date and rows that say the minute
+  // answer "when was that" better than 아침/점심/저녁 ever did.
   function groupByDay(items) {
     const days = new Map();
     items.forEach((e) => {
-      const d = dayOf(e), s = slotKeyOf(e);
-      if (!days.has(d)) days.set(d, new Map());
-      const slots = days.get(d);
-      if (!slots.has(s)) slots.set(s, []);
-      slots.get(s).push(e);
+      const k = dateKey(spentAt(e));
+      if (!days.has(k)) days.set(k, []);
+      days.get(k).push(e);
     });
     const out = [];
-    days.forEach((slots, dayIndex) => {
-      const list = [];
-      slots.forEach((arr, slot) => list.push({ slot, items: arr.sort(byClock) }));
-      list.sort((a, b) => slotRank(a.slot) - slotRank(b.slot));
+    days.forEach((arr, key) => {
+      arr.sort(byClock);
       // Deposits sit in the list but not in the total: a day bar is about how
       // much went out, and 7,000,000원 of trip fees would dwarf every real day.
-      const total = list.reduce((sum, g) =>
-        sum + g.items.reduce((t, e) => t + (isDeposit(e) ? 0 : rowKrw(e)), 0), 0);
-      out.push({ dayIndex, slots: list, total });
+      const total = arr.reduce((s, e) => s + (isDeposit(e) ? 0 : rowKrw(e)), 0);
+      out.push({ key: key, when: spentAt(arr[0]), items: arr, total: total });
     });
-    out.sort((a, b) => dayRank(a.dayIndex) - dayRank(b.dayIndex));
+    out.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
     return out;
   }
 
@@ -1518,14 +1481,12 @@
     days.forEach((day) => {
       const wrap = document.createElement("div");
       wrap.className = "tl-day";
-      const name = day.dayIndex === null ? "❓ 미지정"
-        : (day.dayIndex === PREP_DAY ? "🎒 여행 전 준비" : day.dayIndex + "일차");
-      const date = (day.dayIndex === null || day.dayIndex === PREP_DAY) ? "" : dayDateLabel(day.dayIndex);
+      const tag = dayTag(day.when);
 
       const head = document.createElement("div");
       head.className = "tl-day-head";
-      head.innerHTML = `<span class="tl-day-num">${name}</span>
-        <span class="tl-day-date">${date}</span>
+      head.innerHTML = `<span class="tl-day-num">${dateHeading(day.when)}</span>
+        <span class="tl-day-date">${tag}</span>
         <span class="tl-day-total">${money(day.total, "KRW")}</span>`;
       wrap.appendChild(head);
 
@@ -1535,29 +1496,11 @@
       bar.innerHTML = `<i style="width:${Math.max(2, Math.round(day.total / peak * 100))}%"></i>`;
       wrap.appendChild(bar);
 
-      const row = (e) => timelineRow(e, shareMode ? shareOf(e, state.filter.memberId) : undefined);
-      if (day.dayIndex === PREP_DAY) {
-        // prep spending has no time of day, so no spine — just the list
-        const zone = document.createElement("div");
-        zone.className = "tl-rows";
-        day.slots.forEach((g) => g.items.forEach((e) => zone.appendChild(row(e))));
-        wrap.appendChild(zone);
-      } else {
-        const body = document.createElement("div");
-        body.className = "tl-body";
-        day.slots.forEach((g) => {
-          const sl = document.createElement("div");
-          sl.className = "tl-slot";
-          sl.innerHTML = `<span class="tl-dot">${SLOT_EMOJI[g.slot] || "❓"}</span>
-            <div class="tl-slot-name">${g.slot || "미지정"}</div>`;
-          const zone = document.createElement("div");
-          zone.className = "tl-rows";
-          g.items.forEach((e) => zone.appendChild(row(e)));
-          sl.appendChild(zone);
-          body.appendChild(sl);
-        });
-        wrap.appendChild(body);
-      }
+      const zone = document.createElement("div");
+      zone.className = "tl-rows";
+      day.items.forEach((e) => zone.appendChild(
+        timelineRow(e, shareMode ? shareOf(e, state.filter.memberId) : undefined)));
+      wrap.appendChild(zone);
       box.appendChild(wrap);
     });
   }
@@ -1617,7 +1560,7 @@
         }
       }
     }
-    const slot = d.dayIndex === PREP_DAY ? null : d.slot;
+    const when = d.spentAt || new Date();
     const payload = {
       room_id: state.room.id,
       payer_id: d.payerId,
@@ -1626,12 +1569,11 @@
       category: d.category || "기타",
       note: $("note").value.trim() || null,
       participant_ids: [...d.participants],
-      day_index: d.dayIndex,
-      slot: slot,
-      hour: slot === null ? null : (typeof d.hour === "number" ? d.hour : null),
-      // moving an expense to a different bucket puts it at the end of that one
-      seq: (d.editingId && d.dayIndex === d.origDayIndex && slot === d.origSlot && typeof d.seq === "number")
-        ? d.seq : nextSeq(d.dayIndex, slot),
+      spent_at: when.toISOString(),
+      // Still written for one release so a rollback finds the old columns
+      // populated. Nothing reads them; spent_at is the truth.
+      day_index: dayNumberOf(when),
+      hour: when.getHours(),
     };
     const btn = $("save-btn");
     btn.disabled = true;
@@ -1738,7 +1680,8 @@
         + (r.source === "manual" ? " (직접 입력)" : "");
     }
     if (e.settled) sub += " · ✓정산완료";
-    if (dayOf(e) !== null) sub += `\n${dayLabel(e.day_index)}${e.slot ? " · " + (SLOT_EMOJI[e.slot] || "") + e.slot : ""}`;
+    const w = spentAt(e);
+    sub += `\n${dateHeading(w)} ${clockLabel(w)}${dayTag(w) ? " · " + dayTag(w) : ""}`;
     $("modal-sub").textContent = sub;
     // "Settled on the spot" means the payer was paid back right there. Nobody
     // pays the pot back, so offering it on a pot expense only invites a tap that
@@ -1840,16 +1783,10 @@
     state.draft.category = e.category;
     state.draft.payerId = e.payer_id;
     state.draft.participants = new Set((e.participant_ids && e.participant_ids.length) ? e.participant_ids : [e.payer_id]);
-    // keep the slot it already sits in; only recompute seq if the user moves it
-    if (dayOf(e) !== null) state.draft.dayIndex = e.day_index;
-    if (e.slot) state.draft.slot = e.slot;
-    // Carry the recorded hour, or leave it empty for rows written before there
-    // was one — stamping "now" onto a three-day-old expense invents a fact.
-    state.draft.hour = hourOf(e);
-    state.draft.whenTouched = true; // an existing row already has its own time
-    state.draft.seq = (typeof e.seq === "number") ? e.seq : null;
-    state.draft.origDayIndex = state.draft.dayIndex;
-    state.draft.origSlot = slotKeyOf(e);
+    // An existing row keeps the instant it already has — stamping "now" onto a
+    // three-day-old expense invents a fact.
+    state.draft.spentAt = spentAt(e);
+    state.draft.whenTouched = true;
     state.draft.receiptPath = e.receipt_path || null;
     closeModal();
     show("screen-input");
@@ -2531,7 +2468,7 @@
     // identity
     $("ident-add").onclick = addIdentity;
     $("ident-new").addEventListener("keydown", (e) => { if (e.key === "Enter") addIdentity(); });
-    $("ident-back").onclick = () => show("screen-status");
+    $("ident-back").onclick = () => show("screen-input");
     $("change-me").onclick = openIdentityChange;
 
     // input screen
@@ -2545,6 +2482,12 @@
     });
     $("who-bar").onclick = () => $("who-panel").classList.toggle("open");
     $("when-bar").onclick = () => $("when-panel").classList.toggle("open");
+    $("when-input").addEventListener("input", onWhenInput);
+    $("when-input").addEventListener("change", onWhenInput);
+    $("when-now").onclick = setWhenNow;
+    $("when-m30").onclick = () => nudgeWhen(-30);
+    $("when-m60").onclick = () => nudgeWhen(-60);
+    $("when-m1d").onclick = () => nudgeWhen(-1440);
     $("save-btn").onclick = saveExpense;
     // Phones keep the page alive in the background for hours. Coming back to it
     // should feel like opening it fresh, not like resuming this morning.
@@ -2553,9 +2496,11 @@
     });
     $("input-room").onclick = goHome;
     $("go-status").onclick = () => { renderStatus(); show("screen-status"); };
+    $("history-room").textContent = "기록";
 
     // status
-    $("status-back").onclick = () => show("screen-input");
+    // 정산에서 나가면 기록으로 — 들어온 길로 되돌아간다
+    $("status-back").onclick = () => openTimeline(state.filter.memberId);
     $("go-history").onclick = () => openTimeline(null);
     $("startdate-btn").onclick = openDateModal;
     $("settle-btn").onclick = renderSettlement;
@@ -2570,7 +2515,7 @@
     $("confirm-back").onclick = (e) => { if (e.target === $("confirm-back")) closeConfirm(); };
 
     // history
-    $("history-back").onclick = () => show("screen-status");
+    $("history-back").onclick = () => show("screen-input");
 
     // modal
     $("modal-cancel").onclick = closeModal;

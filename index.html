@@ -517,7 +517,7 @@
   <section id="screen-input" class="screen">
     <div class="top">
       <button class="trip-switch" id="input-room"><span id="input-room-name">여행</span> <span class="caret">⌄</span></button>
-      <button class="link-btn" id="go-status">현황 →</button>
+      <button class="link-btn" id="go-history">기록 →</button>
     </div>
 
     <div class="amount-wrap">
@@ -551,13 +551,13 @@
       <span class="chev">바꾸기 ▾</span>
     </div>
     <div class="who-panel" id="when-panel">
-      <h4>며칠차</h4>
-      <div class="chip-row" id="day-chips"></div>
-      <div id="slot-wrap">
-        <h4>언제</h4>
-        <div class="chip-row" id="slot-chips"></div>
-        <h4>몇 시쯤</h4>
-        <div class="chip-row" id="hour-chips"></div>
+      <h4>언제 썼나요</h4>
+      <input id="when-input" class="text-input" type="datetime-local" step="60" />
+      <div class="chip-row" style="margin-top:12px">
+        <button class="chip" id="when-now">지금</button>
+        <button class="chip" id="when-m30">−30분</button>
+        <button class="chip" id="when-m60">−1시간</button>
+        <button class="chip" id="when-m1d">−1일</button>
       </div>
     </div>
 
@@ -582,9 +582,9 @@
   <!-- STATUS -->
   <section id="screen-status" class="screen">
     <div class="top">
-      <button class="ghost-btn" id="status-back">‹ 입력</button>
-      <h1 id="status-room">현황</h1>
-      <button class="link-btn" id="go-history">타임라인</button>
+      <button class="ghost-btn" id="status-back">‹ 기록</button>
+      <h1 id="status-room">정산</h1>
+      <span style="width:44px"></span>
     </div>
     <div class="stat-hero" id="stat-hero"></div>
     <div class="whoami">나: <b id="whoami-name">-</b><button class="whoami-change" id="change-me">내가 아니에요? 바꾸기</button></div>
@@ -610,6 +610,7 @@
       <input id="member-new" class="text-input" placeholder="새 멤버 이름" maxlength="12" />
       <button id="member-add-btn" class="member-add-btn">추가</button>
     </div>
+    <div id="member-hint" class="empty" style="display:none"></div>
     <button id="pot-add" class="pot-add" style="display:none">💰 공금 칸 만들기
       <span>회비를 미리 걷어 한 지갑에서 쓸 때</span></button>
 
@@ -619,9 +620,9 @@
   <!-- TIMELINE -->
   <section id="screen-history" class="screen">
     <div class="top">
-      <button class="ghost-btn" id="history-back">‹ 현황</button>
-      <h1>타임라인</h1>
-      <span style="width:44px"></span>
+      <button class="ghost-btn" id="history-back">‹ 입력</button>
+      <h1 id="history-room">기록</h1>
+      <button class="link-btn" id="go-status">정산 →</button>
     </div>
     <div class="tl-filters" id="tl-filters"></div>
     <div id="tl-modes-wrap"></div>

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-<meta name="theme-color" content="#0f1115" />
+<meta name="theme-color" content="#000000" />
 <meta name="description" content="친구들과의 여행 지출을 모으고, 누가 누구에게 얼마를 보내면 되는지 한 번에 계산해요." />
 <title>여행 정산</title>
 
@@ -18,18 +18,27 @@
 <meta name="apple-mobile-web-app-title" content="여행 정산" />
 <style>
   :root {
-    --bg: #0f1115;
-    --surface: #1a1d24;
-    --surface-2: #242832;
-    --line: #2e333e;
-    --text: #f3f5f9;
-    --muted: #8b93a3;
-    --faint: #5c6474;
-    --accent: #6a8cff;
-    --accent-press: #5678f0;
-    --pos: #35d6a0;
-    --neg: #ff6b6b;
-    --warn: #f0b429;
+    /* 바탕은 진짜 검정. 그래야 위에 얹히는 면이 "떠 있다"고 읽히고, 한낮 해변에서도
+       대비가 산다. 면이 올라갈수록 밝아지는 세 단계만 쓴다. */
+    --bg: #000000;
+    --surface: #1C1C1E;
+    --surface-2: #2C2C2E;
+    --line: #38383A;
+
+    /* 글자는 불투명 회색이 아니라 흰색의 농도다. 어떤 면 위에 놓이든 같은 위계로
+       읽히고, 면이 밝아져도 따로 손댈 필요가 없다. */
+    --text: #FFFFFF;
+    --muted: rgba(235, 235, 245, .62);
+    --faint: rgba(235, 235, 245, .32);
+
+    /* 액센트는 파랑 하나. 돈의 의미색(초록=받을 돈, 빨강=낼 돈)과 색상환에서 멀어야
+       금액을 흘깃 볼 때 헷갈리지 않는다. 예전 청보라는 초록과 너무 가까웠다. */
+    --accent: #0A84FF;
+    --accent-press: #0060DF;
+    --pos: #30D158;
+    --neg: #FF453A;
+    --warn: #FF9F0A;
+
     --radius: 16px;
     --safe-b: env(safe-area-inset-bottom, 0px);
     --safe-t: env(safe-area-inset-top, 0px);
@@ -42,7 +51,7 @@
     font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Pretendard",
                  "Segoe UI", "Malgun Gothic", system-ui, sans-serif;
     font-size: 16px;
-    line-height: 1.4;
+    line-height: 1.45;   /* 한글은 라틴보다 조금 더 벌려야 읽힌다 */
     -webkit-font-smoothing: antialiased;
     overscroll-behavior-y: none;
   }
@@ -55,8 +64,16 @@
   .screen.active { display: flex; }
 
   /* ── generic bits ── */
-  .top { display: flex; align-items: center; justify-content: space-between;
-         min-height: 44px; margin-bottom: 4px; }
+  /* 목록이 아래로 흐르고 머리글은 남는다. 선을 긋는 대신 흐릿한 층을 하나 두어
+     내용이 그 아래로 지나가게 한다 — 잘린 게 아니라 계속된다는 뜻이 된다. */
+  .top { position: sticky; top: 0; z-index: 20;
+         display: flex; align-items: center; justify-content: space-between;
+         min-height: 44px;
+         margin: calc(-1 * (var(--safe-t) + 8px)) -20px 4px;
+         padding: calc(var(--safe-t) + 8px) 12px 6px;
+         background: rgba(0, 0, 0, .72);
+         -webkit-backdrop-filter: blur(22px) saturate(180%);
+         backdrop-filter: blur(22px) saturate(180%); }
   .top h1 { font-size: 17px; font-weight: 700; margin: 0; letter-spacing: -0.01em; }
   .link-btn { color: var(--accent); font-size: 15px; font-weight: 600; padding: 8px; }
   .ghost-btn { color: var(--muted); font-size: 15px; padding: 8px 4px; }
@@ -72,7 +89,7 @@
   .text-input::placeholder { color: var(--faint); }
 
   .primary {
-    width: 100%; background: var(--accent); color: #0c1020; font-size: 18px;
+    width: 100%; background: var(--accent); color: #FFFFFF; font-size: 18px;
     font-weight: 700; padding: 17px; border-radius: 14px; transition: transform .08s, background .15s;
   }
   .primary:active { transform: scale(0.985); background: var(--accent-press); }
@@ -175,7 +192,8 @@
   .bal-row + .bal-row { border-top: 1px solid var(--line); }
   .bal-name { font-weight: 600; display: flex; align-items: center; gap: 8px; }
   .bal-name .me-tag { font-size: 11px; color: var(--accent); font-weight: 700; }
-  .bal-amt { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .bal-amt { font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+  .bal-row.tappable:active { background: var(--surface-2); }
   .bal-row.ledger { border-top: 1px solid var(--line); margin-top: 4px; }
   .bal-row.ledger .bal-name { color: var(--muted); }
   .bal-row.ledger .bal-amt { color: var(--text); }
@@ -195,7 +213,9 @@
   /* a span is inline by default, and clipping/ellipsis don't apply to inline boxes */
   .exp-title { display: block; font-weight: 600; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .exp-sub { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
-  .exp-amt { font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .exp-amt { font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap;
+             letter-spacing: -0.01em; }
+  .exp-item:active { background: var(--surface-2); }
   .exp-amt-col { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; flex: 0 0 auto; }
   .exp-krw { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .exp-item.settled { opacity: .5; }
@@ -333,7 +353,8 @@
   .tl-day-head { display: flex; align-items: baseline; gap: 7px; padding: 0 2px; }
   .tl-day-num { font-size: 16px; font-weight: 800; letter-spacing: -0.01em; }
   .tl-day-date { color: var(--faint); font-size: 12.5px; }
-  .tl-day-total { margin-left: auto; font-weight: 700; font-size: 14px; font-variant-numeric: tabular-nums; }
+  .tl-day-total { margin-left: auto; font-weight: 700; font-size: 14px;
+                  font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
   .tl-bar { height: 4px; border-radius: 2px; background: var(--surface-2);
             margin: 9px 2px 14px; overflow: hidden; }
   .tl-bar i { display: block; height: 100%; border-radius: 2px;
@@ -420,6 +441,17 @@
   .shotbox img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 8px; }
   .shotbox .sb-hint { position: absolute; left: 0; right: 0; bottom: calc(var(--safe-b) + 18px);
                       text-align: center; color: var(--faint); font-size: 13px; pointer-events: none; }
+
+  /* 움직임을 줄여달라고 한 사람에게는 크기 변화 대신 아무 일도 일어나지 않는다 */
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+    .primary:active, .cat:active, .chip:active { transform: none; }
+  }
+  /* 투명도를 줄여달라고 했으면 흐림을 걷고 불투명하게 — 글자가 먼저다 */
+  @media (prefers-reduced-transparency: reduce) {
+    .top { background: #000; -webkit-backdrop-filter: none; backdrop-filter: none;
+           border-bottom: 1px solid var(--line); }
+  }
 </style>
 </head>
 <body>

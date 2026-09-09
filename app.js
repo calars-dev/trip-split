@@ -2355,7 +2355,8 @@
       const q = new URLSearchParams(location.search);
       if (!q.get("r") && !q.has("home")) {
         const last = getSavedRooms()[0];
-        if (last && last.id) { location.replace(location.pathname + "?r=" + last.id); return; }
+        const target = (last && last.id) || (CFG && CFG.DEFAULT_ROOM) || null;
+        if (target) { location.replace(location.pathname + "?r=" + target); return; }
       }
     }
     try {

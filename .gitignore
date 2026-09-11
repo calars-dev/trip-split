@@ -1,3 +1,6 @@
 node_modules/
 .DS_Store
 *.log
+
+# Supabase CLI scratch state
+supabase/.temp/

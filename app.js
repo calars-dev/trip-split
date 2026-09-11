@@ -218,6 +218,7 @@
     window.scrollTo(0, 0);
     renderInstallHint(id);
     renderPushHint(id);
+    hideUndo(); // leaving the screen where something was just deleted forgets the offer
     if (id === "screen-input") refreshDraftClock();
   }
 
@@ -486,6 +487,25 @@
     t.className = "show" + (isErr ? " err" : "");
     clearTimeout(toastT);
     toastT = setTimeout(() => (t.className = ""), 1800);
+  }
+
+  // ── undo ──
+  // Fourteen people share this list; a slipped tap on 삭제 shouldn't need
+  // someone to redo the whole entry from a photo they may not have kept.
+  // A five-second window after the fact reads as more forgiving than a
+  // confirm dialog, which people click through on autopilot anyway.
+  let undoTimer = null, undoFn = null;
+  function showUndo(msg, fn) {
+    clearTimeout(undoTimer);
+    undoFn = fn;
+    $("undo-msg").textContent = msg;
+    $("undo-toast").classList.add("show");
+    undoTimer = setTimeout(hideUndo, 5000);
+  }
+  function hideUndo() {
+    clearTimeout(undoTimer);
+    $("undo-toast").classList.remove("show");
+    undoFn = null;
   }
 
   // ── localStorage identity ──
@@ -1508,6 +1528,36 @@
     await refetch();
   }
 
+  function shareSettlement() {
+    const text = buildSettlementText();
+    if (navigator.share) {
+      navigator.share({ text }).catch(() => {}); // cancelling the sheet isn't an error
+      return;
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text)
+        .then(() => toast("정산 결과를 복사했어요 — 카톡에 붙여넣기"))
+        .catch(() => toast("공유하지 못했어요", true));
+    } else {
+      toast("이 브라우저는 공유를 지원하지 않아요", true);
+    }
+  }
+
+  function buildSettlementText() {
+    const { balances, transfers } = computeSettlement();
+    const lines = [`💸 ${state.room.name} 정산 결과`];
+    if (transfers.length === 0) {
+      lines.push("✨ 정산 끝! 주고받을 게 없어요.");
+    } else {
+      transfers.forEach((t) =>
+        lines.push(`${memberName(t.from)} → ${memberName(t.to)}  ${money(t.amount, "KRW")}`));
+    }
+    const pot = state.members.find(isLedger);
+    if (pot) lines.push("", `${pot.name} 남은 돈  ${money(-Math.round(balances[pot.id] || 0), "KRW")}`);
+    lines.push("", `자세히: ${location.origin}${location.pathname}?r=${state.room.id}`);
+    return lines.join("\n");
+  }
+
   function renderSettlement() {
     const { transfers } = computeSettlement();
     const box = $("settle-box");
@@ -2146,16 +2196,27 @@
   async function deleteExpense() {
     const e = modalExpense;
     closeModal();
-    // Fourteen people tap around this list and 삭제 sits right above 닫기.
-    // There is no undo, so the question has to come first.
+    // Fourteen people tap around this list and 삭제 sits right above 닫기,
+    // so the question still comes first — but the answer isn't final anymore.
     openConfirm("이 지출을 지울까요?",
-      `${escapeHtml(e.note || e.category || "지출")} · ${money(e.amount, e.currency || "KRW")}<br>되돌릴 수 없어요.`,
+      `${escapeHtml(e.note || e.category || "지출")} · ${money(e.amount, e.currency || "KRW")}<br>지운 뒤 5초 안에 되돌릴 수 있어요.`,
       async () => {
+        closeConfirm();
         const { error } = await sb.from("expenses").delete().eq("id", e.id);
         if (error) { toast("삭제 실패", true); return; }
-        toast("삭제됨");
         await refetch();
+        showUndo(`${e.note || e.category || "지출"} 삭제됨`, () => restoreExpense(e));
       });
+  }
+
+  // `e` is the exact row select("*") handed back before the delete, so
+  // putting it straight back in is the same row, same id — nothing downstream
+  // (a tapped notification link, a still-open gallery) needs to know it left.
+  async function restoreExpense(e) {
+    const { error } = await sb.from("expenses").insert(e);
+    if (error) { toast("되돌리지 못했어요: " + error.message, true); return; }
+    toast("되돌렸어요");
+    await refetch();
   }
 
   // ═══════════════════ ONBOARDING ═══════════════════
@@ -2904,6 +2965,8 @@
     $("push-btn").onclick = () => (pushOn() ? disablePush() : enablePush());
     $("push-go").onclick = () => { dismissPushHint(); enablePush(); };
     $("push-x").onclick = dismissPushHint;
+    $("undo-btn").onclick = () => { const fn = undoFn; hideUndo(); if (fn) fn(); };
+    $("share-btn").onclick = shareSettlement;
     if ("serviceWorker" in navigator) {
       registerSw().catch(() => { swReg = null; });
       // Safari may not let the worker move an open window, so it asks us to.

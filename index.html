@@ -164,10 +164,26 @@
                     padding: 6px 16px; border-radius: 999px; transition: all .15s; }
   .tl-view button.on { background: var(--surface-2); color: var(--text); }
   /* 알림 켜기 — 보기·정렬과 한 줄에, 오른쪽 끝 */
-  .tl-bell { margin-left: auto; display: inline-flex; align-items: center; gap: 6px;
+  .tl-bell { display: inline-flex; align-items: center; gap: 6px;
              font-size: 13px; font-weight: 700; color: var(--muted); padding: 6px 13px;
              background: var(--surface); border: 1px solid var(--line); border-radius: 999px;
              transition: transform .1s ease-out; }
+  /* 지운 지출 — 줄에서 알림 받기 바로 앞, 오른쪽 끝으로 함께 밀린다 */
+  .tl-trash { margin-left: auto; display: inline-flex; align-items: center; gap: 4px;
+              font-size: 13px; font-weight: 700; color: var(--muted); padding: 6px 12px;
+              background: var(--surface); border: 1px solid var(--line); border-radius: 999px;
+              transition: transform .1s ease-out; }
+  .tl-trash .cnt { color: var(--accent); font-weight: 800; min-width: 1ch; }
+  .tl-trash:active { transform: scale(0.96); }
+  /* ── 지운 지출 목록 ── */
+  .trash-row { display: flex; align-items: center; gap: 10px; background: var(--surface);
+               border: 1px solid var(--line); border-radius: 12px; padding: 13px 14px; margin-bottom: 8px; }
+  .trash-row .trash-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .trash-row .trash-info b { font-size: 15px; }
+  .trash-row .trash-sub { color: var(--muted); font-size: 13px; }
+  .trash-row .trash-restore { flex: 0 0 auto; background: var(--accent); color: #0c1020; font-weight: 700;
+                              font-size: 13.5px; padding: 9px 14px; border-radius: 999px; }
+  .trash-row .trash-restore:active { transform: scale(0.96); }
   .tl-bell .ico { flex: 0 0 auto; }
   .tl-bell.on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
   .tl-bell:active { transform: scale(0.96); }
@@ -488,8 +504,9 @@
   /* 움직임을 줄여달라고 한 사람에게는 크기 변화 대신 아무 일도 일어나지 않는다 */
   @media (prefers-reduced-motion: reduce) {
     * { transition: none !important; animation: none !important; }
-    .primary:active, .cat:active, .chip:active, .tl-bell:active,
-    .settle-btn:active, .share-btn:active, .undo-toast .undo-btn:active { transform: none; }
+    .primary:active, .cat:active, .chip:active, .tl-bell:active, .tl-trash:active,
+    .settle-btn:active, .share-btn:active, .undo-toast .undo-btn:active,
+    .trash-row .trash-restore:active { transform: none; }
     .undo-toast { transition: none; }
   }
   /* 투명도를 줄여달라고 했으면 흐림을 걷고 불투명하게 — 글자가 먼저다 */
@@ -737,11 +754,23 @@
     <div class="tl-controls">
       <div class="tl-view" id="tl-view"></div>
       <div class="tl-view" id="tl-sort"></div>
+      <button class="tl-trash" id="trash-btn" type="button">🗑<span class="cnt" id="trash-count"></span></button>
       <button class="tl-bell" id="push-btn" type="button"><span>알림 받기</span></button>
     </div>
     <div id="tl-modes-wrap"></div>
     <div id="tl-notice"></div>
     <div id="timeline"></div>
+  </section>
+
+  <!-- TRASH -->
+  <section id="screen-trash" class="screen">
+    <div class="top">
+      <button class="ghost-btn" id="trash-back">‹ 기록</button>
+      <h1>지운 지출</h1>
+      <span style="width:44px"></span>
+    </div>
+    <div class="msub" style="margin:-4px 2px 14px">되돌리기를 누르면 사진·금액·시간 전부 그대로 살아나요.</div>
+    <div id="trash-list"></div>
   </section>
 
   <!-- LOADING -->

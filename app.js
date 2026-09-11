@@ -894,7 +894,7 @@
   // Returns { balances: {memberId: net}, transfers: [{from,to,amount}] }, all in KRW.
   function computeSettlement() {
     const balances = {}; // memberId -> net KRW
-    for (const e of state.expenses) {
+    for (const e of activeExpenses()) {
       if (e.settled) continue; // on-the-spot payments excluded from settlement
       // convert once per expense, then split — otherwise per-person rounding drifts
       const total = krwAmount(e);
@@ -1201,11 +1201,11 @@
     // headline: once when everyone pays in, again when the pot pays out.
     // `settled` rows are already out of computeSettlement, so counting them here
     // would let the two halves of this screen disagree.
-    const spent = state.expenses.filter((e) => !isDeposit(e) && !e.settled);
+    const spent = activeExpenses().filter((e) => !isDeposit(e) && !e.settled);
     const total = spent.reduce((sum, e) => sum + krwAmount(e), 0);
     const hero = $("stat-hero");
     const headCount = state.members.length || 1;
-    if (state.expenses.length === 0) {
+    if (activeExpenses().length === 0) {
       hero.innerHTML = `<div class="total">${money(0, "KRW")}</div>
         <div class="avg">아직 지출이 없어요</div>`;
     } else if (pot) {
@@ -1263,11 +1263,11 @@
            <b>migration-pot.sql</b>을 한 번 실행해 주세요.
            그때까지 공금이 사람 한 명으로 계산돼요.</div>`
         : "";
-    const noShot = receiptColMissing ? 0 : state.expenses.filter((e) => !receiptKeys(e).length).length;
+    const noShot = receiptColMissing ? 0 : activeExpenses().filter((e) => !receiptKeys(e).length).length;
     $("receipt-todo").innerHTML = noShot
       ? `<div class="tl-notice">📷 영수증이 없는 지출 <b>${noShot}건</b> — 지출을 탭해 붙일 수 있어요.</div>`
       : "";
-    renderExpenseList($("status-exp-list"), state.expenses, "아직 지출이 없어요.");
+    renderExpenseList($("status-exp-list"), activeExpenses(), "아직 지출이 없어요.");
     renderMembers();
     renderStartDate();
     renderLockRow();
@@ -1562,7 +1562,7 @@
     const { transfers } = computeSettlement();
     const box = $("settle-box");
     // warn when some rows were converted with a stand-in rate rather than that day's
-    const estN = state.expenses.filter((e) => !e.settled && isEstimated(e)).length;
+    const estN = activeExpenses().filter((e) => !e.settled && isEstimated(e)).length;
     const note = estN
       ? `<div class="settle-note">⚡ ${estN}건은 실시간 환율을 못 받아 기준 환율로 계산했어요. 지출을 탭해 고칠 수 있어요.</div>`
       : "";
@@ -1713,9 +1713,10 @@
   // ═══════════════════ TIMELINE ═══════════════════
   function filteredExpenses() {
     const f = state.filter;
-    if (!f.memberId) return state.expenses;
-    if (f.mode === "paid") return state.expenses.filter((e) => e.payer_id === f.memberId);
-    return state.expenses.filter((e) => {
+    const active = activeExpenses();
+    if (!f.memberId) return active;
+    if (f.mode === "paid") return active.filter((e) => e.payer_id === f.memberId);
+    return active.filter((e) => {
       const parts = (e.participant_ids && e.participant_ids.length) ? e.participant_ids : [e.payer_id];
       return parts.indexOf(f.memberId) >= 0;
     });
@@ -1839,6 +1840,7 @@
 
   function renderTimeline() {
     if (!state.room) return;
+    renderTrashBtn();
     renderFilters();
     $("tl-notice").innerHTML = timelineColsMissing
       ? `<div class="tl-notice">⚠️ 일차·시간대를 저장할 칸이 아직 없어요 —
@@ -2193,30 +2195,82 @@
     toast("수정 모드");
   }
 
+  const isMissingDeletedAtCol = (err) => !!err && /\bdeleted_at\b/.test(err.message || "");
+  let deletedAtColMissing = false;
+  // Everywhere that adds up money or lists what's current reads this instead
+  // of state.expenses directly — a trashed row stays in the array (so it can
+  // still be found and put back) but drops out of every total and list.
+  const activeExpenses = () => state.expenses.filter((e) => !e.deleted_at);
+
   async function deleteExpense() {
     const e = modalExpense;
     closeModal();
+    if (deletedAtColMissing) { await hardDeleteExpense(e); return; }
     // Fourteen people tap around this list and 삭제 sits right above 닫기,
     // so the question still comes first — but the answer isn't final anymore.
     openConfirm("이 지출을 지울까요?",
-      `${escapeHtml(e.note || e.category || "지출")} · ${money(e.amount, e.currency || "KRW")}<br>지운 뒤 5초 안에 되돌릴 수 있어요.`,
+      `${escapeHtml(e.note || e.category || "지출")} · ${money(e.amount, e.currency || "KRW")}<br>지운 지출은 기록 화면 🗑에서 다시 볼 수 있어요.`,
       async () => {
         closeConfirm();
-        const { error } = await sb.from("expenses").delete().eq("id", e.id);
-        if (error) { toast("삭제 실패", true); return; }
+        const when = new Date().toISOString();
+        const { error } = await sb.from("expenses").update({ deleted_at: when }).eq("id", e.id);
+        if (error) {
+          if (isMissingDeletedAtCol(error)) { deletedAtColMissing = true; await hardDeleteExpense(e); return; }
+          toast("삭제 실패", true); return;
+        }
+        e.deleted_at = when;
         await refetch();
         showUndo(`${e.note || e.category || "지출"} 삭제됨`, () => restoreExpense(e));
       });
   }
 
-  // `e` is the exact row select("*") handed back before the delete, so
-  // putting it straight back in is the same row, same id — nothing downstream
-  // (a tapped notification link, a still-open gallery) needs to know it left.
-  async function restoreExpense(e) {
-    const { error } = await sb.from("expenses").insert(e);
-    if (error) { toast("되돌리지 못했어요: " + error.message, true); return; }
-    toast("되돌렸어요");
+  // migration-trash.sql 이 아직 안 돌았을 때만 — 이번 한 번은 예전처럼 영구 삭제고,
+  // 되돌리기도 제안하지 않는다. 있는 척해서 좋을 게 없다.
+  async function hardDeleteExpense(e) {
+    const { error } = await sb.from("expenses").delete().eq("id", e.id);
+    if (error) { toast("삭제 실패", true); return; }
+    toast("삭제됨 (되돌릴 수 없어요 — migration-trash.sql 실행 전)", true);
     await refetch();
+  }
+
+  // `e` is the exact row select("*") handed back before the delete, so this
+  // is the same row, same id — nothing downstream (a tapped notification
+  // link, a still-open gallery) needs to know it ever left.
+  async function restoreExpense(e) {
+    const { error } = await sb.from("expenses").update({ deleted_at: null }).eq("id", e.id);
+    if (error) { toast("되돌리지 못했어요: " + error.message, true); return; }
+    e.deleted_at = null;
+    toast("되돌렸어요");
+    hideUndo();
+    await refetch();
+    renderTrash();
+  }
+
+  // ── trash ──
+  function renderTrashBtn() {
+    const n = state.expenses.filter((e) => e.deleted_at).length;
+    $("trash-count").textContent = n ? String(n) : "";
+  }
+
+  function renderTrash() {
+    const box = $("trash-list");
+    if (!box) return;
+    const trashed = state.expenses.filter((e) => e.deleted_at)
+      .sort((a, b) => new Date(b.deleted_at) - new Date(a.deleted_at));
+    if (!trashed.length) { box.innerHTML = `<div class="empty">지운 지출이 없어요</div>`; return; }
+    box.innerHTML = "";
+    trashed.forEach((e) => {
+      const row = document.createElement("div");
+      row.className = "trash-row";
+      const cur = e.currency || "KRW";
+      row.innerHTML = `<span class="trash-info">
+          <b>${escapeHtml(e.note || e.category || "지출")}</b>
+          <span class="trash-sub">${money(e.amount, cur)} · ${escapeHtml(memberName(e.payer_id))} 냄</span>
+        </span>
+        <button class="trash-restore" type="button">되돌리기</button>`;
+      row.querySelector(".trash-restore").onclick = () => restoreExpense(e);
+      box.appendChild(row);
+    });
   }
 
   // ═══════════════════ ONBOARDING ═══════════════════
@@ -2803,6 +2857,12 @@
     } catch (err) {
       receiptPathsColMissing = false;
     }
+    try {
+      const probe3 = await sb.from("expenses").select("deleted_at").limit(1);
+      deletedAtColMissing = isMissingDeletedAtCol(probe3.error);
+    } catch (err) {
+      deletedAtColMissing = false;
+    }
     await refetch();
     subscribeRealtime();
     // refresh the room's fallback rate in the background; re-render if it moved
@@ -2965,6 +3025,8 @@
     $("push-btn").onclick = () => (pushOn() ? disablePush() : enablePush());
     $("push-go").onclick = () => { dismissPushHint(); enablePush(); };
     $("push-x").onclick = dismissPushHint;
+    $("trash-btn").onclick = () => { renderTrash(); show("screen-trash"); };
+    $("trash-back").onclick = () => show("screen-history");
     $("undo-btn").onclick = () => { const fn = undoFn; hideUndo(); if (fn) fn(); };
     $("share-btn").onclick = shareSettlement;
     if ("serviceWorker" in navigator) {

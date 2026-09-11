@@ -37,14 +37,18 @@ function makeClient(T, log) {
         return { data: null, error: null };
       }
       if (pendingInsert) {
-        if (T.failRestore) return { data: null, error: { message: "boom" } };
         T[table].push(pendingInsert);
         return { data: null, error: null };
       }
       if (pendingUpdate) {
+        const p = pendingUpdate;
+        // 되돌리기(deleted_at: null)만 흉내낸 실패 대상 — 지우기는 항상 되게 둔다
+        if (T.failRestore && Object.prototype.hasOwnProperty.call(p, "deleted_at") && p.deleted_at === null) {
+          return { data: null, error: { message: "boom" } };
+        }
         const idFilter = filters.find((f) => f[0] === "id");
         const row = idFilter && T[table].find((r) => r.id === idFilter[1]);
-        if (row) Object.assign(row, pendingUpdate);
+        if (row) Object.assign(row, p);
         return { data: null, error: null };
       }
       const rows = (T[table] || []).filter((r) => filters.every((f) => String(r[f[0]]) === String(f[1])));
@@ -57,7 +61,7 @@ function makeClient(T, log) {
       maybeSingle() { single = true; return Promise.resolve().then(run); },
       single() { single = true; return Promise.resolve().then(run); },
       insert(p) { pendingInsert = p; log.push(["insert", table, p]); return api; },
-      update(p) { pendingUpdate = p; return api; },
+      update(p) { pendingUpdate = p; log.push(["update", table, p]); return api; },
       delete() { pendingDelete = true; log.push(["delete", table]); return api; },
       then(res, rej) { return Promise.resolve().then(run).then(res, rej); },
     };
@@ -115,16 +119,20 @@ async function openAndDelete(w) {
   let { w, log } = boot(T);
   await wait(250);
   await openAndDelete(w);
-  ok("삭제 요청이 나갔다", log.some((l) => l[0] === "delete"), true);
+  ok("삭제 요청이 나갔다 (deleted_at 을 찍는 update)",
+    log.some((l) => l[0] === "update" && l[2] && l[2].deleted_at), true);
   ok("확인 시트가 닫혔다", $(w, "confirm-back").classList.contains("show"), false);
   ok("되돌리기 막대가 떴다", $(w, "undo-toast").classList.contains("show"), true);
   ok("메시지에 이름이 있다", /라멘/.test($(w, "undo-msg").textContent), true);
-  ok("목록에서 사라졌다", T.expenses.length, 0);
+  ok("행은 그대로 있고 deleted_at 만 찍혔다",
+    T.expenses.length === 1 && !!T.expenses[0].deleted_at, true);
 
   $(w, "undo-btn").click();
   await wait(80);
-  ok("되돌리기 요청이 나갔다", log.some((l) => l[0] === "insert"), true);
-  ok("같은 id로 되살아났다", T.expenses.map((e) => e.id), ["e1"]);
+  ok("되돌리기 요청이 나갔다 (deleted_at 을 지우는 update)",
+    log.some((l) => l[0] === "update" && l[2] && l[2].deleted_at === null), true);
+  ok("같은 행이 그대로 되살아났다", T.expenses.map((e) => e.id), ["e1"]);
+  ok("되살아나면서 deleted_at 이 지워졌다", T.expenses[0].deleted_at, null);
   ok("막대가 닫혔다", $(w, "undo-toast").classList.contains("show"), false);
 
   console.log("\n[5초가 지나면 되돌릴 수 없다]");

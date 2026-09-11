@@ -1823,7 +1823,7 @@
         // Losing the record is worse than losing the photo. On a bad connection
         // the expense can go in now and the receipt can follow from the hotel
         // wifi; the status screen counts what is still owed a photo.
-        if (!confirm("영수증을 올리지 못했어요. 연결이 나쁜 것 같아요.\n\n지출만 먼저 저장하고 영수증은 나중에 붙일까요?\n(현황 화면에 미첨부로 남습니다)")) {
+        if (!confirm("영수증을 올리지 못했어요 (" + ((err && err.message) || "연결 문제") + ").\n\n지출만 먼저 저장하고 영수증은 나중에 붙일까요?\n(현황 화면에 미첨부로 남습니다)")) {
           btn.disabled = false;
           toast("저장하지 않았어요 — 연결이 돌아오면 저장을 다시 눌러 주세요", true);
           return;
@@ -2617,11 +2617,16 @@
     // Ask once whether receipts can be stored at all. Requiring a photo the
     // database has nowhere to put would lock the app up entirely. Anything
     // unexpected here must not strand the boot on the loading screen.
+    //
+    // Only an answer that names the column counts as "no column". Any other
+    // failure — a dropped connection, a token mid-refresh — used to count too,
+    // and then that whole session hid 영수증 첨부 and saved without photos.
+    // If the column really were missing, the save retry drops it anyway.
     try {
       const probe = await sb.from("expenses").select("receipt_path").limit(1);
-      receiptColMissing = !!probe.error;
+      receiptColMissing = isMissingReceiptCol(probe.error);
     } catch (err) {
-      receiptColMissing = true;
+      receiptColMissing = false;
     }
     await refetch();
     subscribeRealtime();

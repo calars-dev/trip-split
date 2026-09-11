@@ -40,7 +40,7 @@ function makeClient(T, log) {
     const run = () => {
       // The receipt-column probe fails on purpose: without it every new expense
       // would demand a photo, which a test can't pick.
-      if (table === "expenses" && cols === "receipt_path") return { data: null, error: { message: "no column" } };
+      if (table === "expenses" && cols === "receipt_path") return { data: null, error: { message: "column expenses.receipt_path does not exist" } };
       if (inserted) return failInsert
         ? { data: null, error: { message: "boom" } }
         : { data: [{ id: inserted.id }], error: null };

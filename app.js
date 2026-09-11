@@ -207,6 +207,7 @@
     $(id).classList.add("active");
     window.scrollTo(0, 0);
     renderInstallHint(id);
+    renderPushHint(id);
     if (id === "screen-input") refreshDraftClock();
   }
 
@@ -254,6 +255,167 @@
   function dismissInstallHint() {
     localStorage.setItem(INSTALL_KEY, "1");
     $("install-hint").classList.remove("show");
+  }
+
+  // ── 새 지출 알림 (Web Push) ──
+  // Someone saves an expense → everyone else's phone shows "정원호 · ¥3,000 / 라멘",
+  // and tapping it opens that expense. The server side is the notify-expense Edge
+  // Function; sw.js shows the notification and routes the tap back here.
+  //
+  // Each phone has to say yes once, from a tap — browsers refuse to ask otherwise.
+  // iPhones only allow it for an app added to the home screen (iOS 16.4+), so in
+  // a Safari tab the button leads to the install steps instead.
+  const PUSH_KEY = (roomId) => "tripsplit_push_" + roomId;
+  const PUSH_HINT_KEY = "tripsplit_push_hint_dismissed";
+  const canPush = () => "serviceWorker" in navigator && "PushManager" in window
+    && "Notification" in window && !!(CFG && CFG.VAPID_PUBLIC_KEY);
+  let swReg = null; // Promise<ServiceWorkerRegistration> once registered
+
+  function keyBytes(b64) {
+    const s = b64.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((b64.length + 3) % 4);
+    const bin = atob(s);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+
+  const BELL = `<svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none"
+      stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>`;
+
+  const pushOn = () => !!(state.room && canPush() && Notification.permission === "granted"
+    && localStorage.getItem(PUSH_KEY(state.room.id)));
+
+  function renderPushBtn() {
+    const b = $("push-btn");
+    if (!b) return;
+    const denied = canPush() && Notification.permission === "denied";
+    const on = pushOn();
+    b.classList.toggle("on", on);
+    b.innerHTML = BELL + `<span>${on ? "알림 켜짐" : (denied ? "알림 차단됨" : "알림 받기")}</span>`;
+  }
+
+  function renderPushHint(screenId) {
+    const el = $("push-hint");
+    if (!el) return;
+    let wanted = screenId === "screen-history" && canPush() && !!state.me
+      && Notification.permission === "default" && !localStorage.getItem(PUSH_HINT_KEY);
+    // one bar at a time — "add to home screen" comes first, it's what makes this work on iPhone
+    if ($("install-hint").classList.contains("show")) wanted = false;
+    el.classList.toggle("show", wanted);
+  }
+  function dismissPushHint() {
+    localStorage.setItem(PUSH_HINT_KEY, "1");
+    $("push-hint").classList.remove("show");
+  }
+
+  async function savePushSub(sub) {
+    const j = sub.toJSON();
+    const { data, error } = await sb.rpc("save_push_subscription", {
+      p_room: state.room.id, p_endpoint: j.endpoint, p_p256dh: j.keys.p256dh, p_auth: j.keys.auth,
+    });
+    return !error && data === true;
+  }
+
+  async function enablePush() {
+    if (!canPush()) {
+      if (isIOS || inAppBrowser) {
+        toast(inAppBrowser ? "브라우저로 열어야 알림을 받을 수 있어요"
+                           : "아이폰은 홈 화면에 추가한 앱에서만 알림이 와요", true);
+        openInstallGuide();
+      } else {
+        toast("이 브라우저는 알림을 받을 수 없어요", true);
+      }
+      return;
+    }
+    if (Notification.permission === "denied") {
+      toast(isIOS ? "설정 → 알림 → 이시가키 에서 허용해 주세요"
+                  : "브라우저 설정에서 이 사이트 알림을 허용해 주세요", true);
+      return;
+    }
+    const perm = await Notification.requestPermission();
+    if (perm !== "granted") { renderPushBtn(); renderPushHint("screen-history"); return; }
+    try {
+      const reg = await (swReg || registerSw());
+      let sub = await reg.pushManager.getSubscription();
+      if (!sub) {
+        sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true, applicationServerKey: keyBytes(CFG.VAPID_PUBLIC_KEY),
+        });
+      }
+      if (!(await savePushSub(sub))) throw new Error("save");
+      localStorage.setItem(PUSH_KEY(state.room.id), sub.endpoint);
+      toast("알림 켜짐 — 누가 지출을 넣으면 바로 떠요");
+    } catch (err) {
+      toast("알림을 켜지 못했어요. 잠시 뒤 다시 눌러 주세요", true);
+    }
+    renderPushBtn();
+    renderPushHint("screen-history");
+  }
+
+  async function disablePush() {
+    localStorage.removeItem(PUSH_KEY(state.room.id));
+    try {
+      const reg = await (swReg || registerSw());
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) {
+        await sb.rpc("delete_push_subscription", { p_endpoint: sub.endpoint });
+        await sub.unsubscribe();
+      }
+    } catch (err) { /* already gone is fine */ }
+    toast("알림을 껐어요");
+    renderPushBtn();
+  }
+
+  // On every entry: re-send the subscription so it follows a re-login, and
+  // notice if the phone dropped it (permission revoked, app re-installed).
+  async function syncPush() {
+    renderPushBtn();
+    if (!canPush() || Notification.permission !== "granted" || !state.room) return;
+    try {
+      const reg = await (swReg || registerSw());
+      const sub = await reg.pushManager.getSubscription();
+      if (sub && await savePushSub(sub)) localStorage.setItem(PUSH_KEY(state.room.id), sub.endpoint);
+      else localStorage.removeItem(PUSH_KEY(state.room.id));
+    } catch (err) { /* leave the button as it was */ }
+    renderPushBtn();
+  }
+
+  function registerSw() {
+    if (!("serviceWorker" in navigator)) return Promise.reject(new Error("no sw"));
+    swReg = navigator.serviceWorker.register("sw.js").then(() => navigator.serviceWorker.ready);
+    return swReg;
+  }
+
+  // Fire-and-forget, after the save already succeeded: a push that fails must
+  // never make a saved expense look unsaved.
+  async function notifyExpense(expenseId) {
+    if (!expenseId || !CFG || !CFG.VAPID_PUBLIC_KEY) return;
+    try {
+      const { data } = await sb.auth.getSession();
+      const token = data && data.session && data.session.access_token;
+      if (!token) return;
+      fetch(CFG.SUPABASE_URL + "/functions/v1/notify-expense", {
+        method: "POST",
+        keepalive: true,
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + token,
+                   apikey: CFG.SUPABASE_ANON_KEY },
+        body: JSON.stringify({ expense_id: expenseId }),
+      }).catch(() => {});
+    } catch (err) { /* no session, no push */ }
+  }
+
+  // A tapped notification lands on ?r=<trip>&e=<expense>. Open that one expense
+  // over the timeline, then drop ?e= so a reload doesn't reopen it.
+  function openLinkedExpense(id) {
+    id = id || new URLSearchParams(location.search).get("e");
+    if (!id || !state.room) return false;
+    try { history.replaceState(null, "", location.pathname + "?r=" + state.room.id); } catch (err) {}
+    const e = state.expenses.find((x) => x.id === id);
+    if (!e) { toast("그 지출을 찾지 못했어요 — 지워졌을 수 있어요", true); return false; }
+    openTimeline(null);
+    openExpenseModal(e);
+    return true;
   }
 
   // Apple never implemented beforeinstallprompt, so on iOS the best available
@@ -1692,14 +1854,16 @@
       }
     }
 
+    // A new row comes back with its id: the notification links straight to it.
+    const isNew = !d.editingId;
     const send = (p) => d.editingId
       ? sb.from("expenses").update(p).eq("id", d.editingId)
-      : sb.from("expenses").insert(p);
+      : sb.from("expenses").insert(p).select("id");
 
     // An un-migrated DB rejects columns it doesn't have. Drop them and retry —
     // saving must never be blocked by a SQL file nobody ran yet. Two rounds
     // because the rate columns and the timeline columns can both be missing.
-    let { error } = await send(sanitize(payload));
+    let { data: saved, error } = await send(sanitize(payload));
     for (let i = 0; i < 4 && error; i++) {
       let dropped = false;
       if (isMissingRateCol(error) && !rateColsMissing) { rateColsMissing = true; dropped = true; }
@@ -1707,10 +1871,11 @@
       if (isMissingReceiptCol(error) && !receiptColMissing) { receiptColMissing = true; dropped = true; }
       if (isMissingHourCol(error) && !hourColMissing) { hourColMissing = true; dropped = true; }
       if (!dropped) break;
-      ({ error } = await send(sanitize(payload)));
+      ({ data: saved, error } = await send(sanitize(payload)));
     }
     btn.disabled = false;
     if (error) { toast("저장 실패: " + error.message, true); return; }
+    if (isNew && saved && saved[0]) notifyExpense(saved[0].id);
     // Only nag about columns whose absence is a surprise. Running without the
     // rate columns is a deliberate choice here — the ⚡기준환율 badge and the
     // settlement note already say so, and repeating it on every single save is
@@ -1980,6 +2145,8 @@
     renderCats();
     renderAll();
     show("screen-input");
+    syncPush();
+    openLinkedExpense();
     // No autofocus on arrival. Most of a group never enters anything — they open
     // the app to read a number — and a keyboard covering half the screen on
     // launch reads as "type something" to people who came to look.
@@ -2614,6 +2781,25 @@
 
     // history
     $("history-back").onclick = () => show("screen-input");
+    $("push-btn").onclick = () => (pushOn() ? disablePush() : enablePush());
+    $("push-go").onclick = () => { dismissPushHint(); enablePush(); };
+    $("push-x").onclick = dismissPushHint;
+    if ("serviceWorker" in navigator) {
+      registerSw().catch(() => { swReg = null; });
+      // Safari may not let the worker move an open window, so it asks us to.
+      navigator.serviceWorker.addEventListener("message", async (ev) => {
+        const url = ev.data && ev.data.open;
+        if (!url) return;
+        const u = new URL(url, location.href);
+        if (state.room && state.me && u.searchParams.get("r") === state.room.id) {
+          closeModal();
+          await refetch();
+          openLinkedExpense(u.searchParams.get("e"));
+        } else {
+          location.href = u.href;
+        }
+      });
+    }
 
     // modal
     $("modal-cancel").onclick = closeModal;

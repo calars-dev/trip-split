@@ -1,0 +1,13 @@
+{
+  "note": "review_hub/push.py 로 만든 고정 벡터. 테스트 전용 키.",
+  "payload_b64u": "eyJ0aXRsZSI6ICLsoJXsm5DtmLggwrcgwqUzLDAwMCIsICJib2R5IjogIuudvOupmCDwn42cIiwgInVybCI6ICIvdHJpcC1zcGxpdC8_cj1xeDczaWZ4JmU9YWJjIn0",
+  "p256dh": "BJaTYMs_YKqNlQOoIz-wtl3vMq3VlYijZnhoWcnvNaSXsAKd4HIbK8Zc76tlmgIPBoo6yZOBFhRpr89pUBr3pG4",
+  "auth": "RCTLN-IE9tKK54747ZD8Kw",
+  "salt": "Os3TCYgXyNVIxBVj4z6zDQ",
+  "sender": {
+    "d": "H5Uz3yCNqHHAG1cViFGLluwCzjUldsslN2aFEiS5_k4",
+    "x": "bHNPZHD1ytk73kcVooQjJI0p7hUXucDfSVT0ojHBmYQ",
+    "y": "xycwtLJ7kENv0jrZZB6nHKRGbWXr53bh_9fXPhiTOBA"
+  },
+  "expected_b64u": "Os3TCYgXyNVIxBVj4z6zDQAAEABBBGxzT2Rw9crZO95HFaKEIySNKe4VF7nA30lU9KIxwZmExycwtLJ7kENv0jrZZB6nHKRGbWXr53bh_9fXPhiTOBAiEvYI3V9Acdk3Z8f6CNWMmK3qONEcHYjO7DIRe2iLGYW8xukarmaLpU3ODdtSDpNH04iJrunzEu1g6qo6UX4VTKU-OoqDavfljlmi01bgI5r205X_I9bMQeSj4wO8r9TDfbYW7fg6TDC8BdxAdrDL"
+}

@@ -163,6 +163,14 @@
   .tl-view button { font-size: 13px; font-weight: 700; color: var(--muted);
                     padding: 6px 16px; border-radius: 999px; transition: all .15s; }
   .tl-view button.on { background: var(--surface-2); color: var(--text); }
+  /* 알림 켜기 — 보기·정렬과 한 줄에, 오른쪽 끝 */
+  .tl-bell { margin-left: auto; display: inline-flex; align-items: center; gap: 6px;
+             font-size: 13px; font-weight: 700; color: var(--muted); padding: 6px 13px;
+             background: var(--surface); border: 1px solid var(--line); border-radius: 999px;
+             transition: transform .1s ease-out; }
+  .tl-bell .ico { flex: 0 0 auto; }
+  .tl-bell.on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+  .tl-bell:active { transform: scale(0.96); }
 
   /* 요약 한 줄 — 시각과 금액이 고정폭이라 줄마다 자리가 흔들리지 않는다 */
   .tlb { display: grid; grid-template-columns: 46px 1fr auto; gap: 10px;
@@ -688,6 +696,7 @@
     <div class="tl-controls">
       <div class="tl-view" id="tl-view"></div>
       <div class="tl-view" id="tl-sort"></div>
+      <button class="tl-bell" id="push-btn" type="button"><span>알림 받기</span></button>
     </div>
     <div id="tl-modes-wrap"></div>
     <div id="tl-notice"></div>
@@ -722,6 +731,14 @@
   <span class="ins-text"><b>홈 화면에 추가하세요</b><span id="install-how"></span></span>
   <button class="ins-go" id="install-go" style="display:none">추가</button>
   <button class="ins-x" id="install-x" aria-label="닫기">×</button>
+</div>
+
+<!-- 새 지출 알림 — 폰마다 한 번은 직접 눌러 허락해야 한다 -->
+<div class="install" id="push-hint">
+  <img src="icons/icon-192.png" alt="" />
+  <span class="ins-text"><b>새 지출 알림 받기</b><span>누가 얼마 썼는지 바로 떠요</span></span>
+  <button class="ins-go" id="push-go">켜기</button>
+  <button class="ins-x" id="push-x" aria-label="닫기">×</button>
 </div>
 
 <div class="modal-back" id="confirm-back">

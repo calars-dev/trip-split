@@ -155,7 +155,11 @@
     delete q.day_index; delete q.slot; delete q.seq;
     return q;
   }
-  const isMissingReceiptCol = (err) => !!err && /receipt_path/.test(err.message || "");
+  // \b sits between "path" and "s" only because both are word characters —
+  // there's no boundary there, so this can't fire on "receipt_paths" too.
+  const isMissingReceiptCol = (err) => !!err && /\breceipt_path\b/.test(err.message || "");
+  const isMissingReceiptPathsCol = (err) => !!err && /receipt_paths/.test(err.message || "");
+  let receiptPathsColMissing = false;
   // And the clock column (migration-pot.sql).
   let hourColMissing = false;
   const isMissingHourCol = (err) => !!err && /\bhour\b/.test(err.message || "");
@@ -165,6 +169,7 @@
     if (rateColsMissing) q = stripRateCols(q);
     if (timelineColsMissing) q = stripTimelineCols(q);
     if (receiptColMissing) { q = Object.assign({}, q); delete q.receipt_path; }
+    if (receiptPathsColMissing) { q = Object.assign({}, q); delete q.receipt_paths; }
     if (hourColMissing) { q = Object.assign({}, q); delete q.hour; }
     return q;
   }
@@ -178,6 +183,11 @@
   const THUMB_PX = 220, THUMB_Q = 0.7;
   let receiptColMissing = false;
   const receiptUrl = (key, thumb) => RECEIPT_BASE + key + (thumb ? "_t.jpg" : ".jpg");
+  // A row from before this feature has only receipt_path (one key); a row
+  // saved since has receipt_paths (an array, possibly of one). Either way,
+  // every other line of code asks this instead of touching a column by name.
+  const receiptKeys = (e) =>
+    (e.receipt_paths && e.receipt_paths.length) ? e.receipt_paths : (e.receipt_path ? [e.receipt_path] : []);
 
   // ── app state ──
   const state = {
@@ -919,7 +929,7 @@
   function freshDraft() {
     // the old preview is a blob URL; dropping the draft without releasing it
     // leaks the image for the life of the page
-    if (state.draft && state.draft.shot) URL.revokeObjectURL(state.draft.shot.preview);
+    if (state.draft && state.draft.shots) state.draft.shots.forEach((s) => URL.revokeObjectURL(s.preview));
     state.draft = {
       amount: "",
       currency: state.room.default_currency || "KRW",
@@ -941,9 +951,10 @@
       // Until someone picks a time themselves, the clock keeps the draft current
       // — an app left open since lunch must not stamp lunch on a dinner receipt.
       whenTouched: false,
-      // receipt: `shot` is a freshly picked photo, `receiptPath` one already stored
-      shot: null,
-      receiptPath: null,
+      // receipt: `shots` are freshly picked, not-yet-uploaded photos; `receiptPaths`
+      // are keys already stored from an earlier save (set only while editing)
+      shots: [],
+      receiptPaths: [],
     };
   }
 
@@ -984,38 +995,66 @@
          <b>migration-receipt.sql</b>을 실행하기 전까지는 첨부 없이 저장돼요.</div>`
       : "";
     // an expense that already has one keeps it unless a new photo is chosen
-    const existing = d.editingId && d.receiptPath && !d.shot;
-    if (d.shot) {
+    const count = d.receiptPaths.length + d.shots.length;
+    if (count > 0) {
+      const first = d.shots[0] ? d.shots[0].preview : receiptUrl(d.receiptPaths[0], true);
       bar.className = "receipt-bar done";
-      thumb.innerHTML = `<img src="${d.shot.preview}" alt="" />`;
-      text.innerHTML = `영수증 <b>첨부됨</b><span class="rb-sub">탭해서 다시 고르기</span>`;
-    } else if (existing) {
-      bar.className = "receipt-bar done";
-      thumb.innerHTML = `<img src="${receiptUrl(d.receiptPath, true)}" alt="" />`;
-      text.innerHTML = `영수증 <b>있음</b><span class="rb-sub">탭해서 바꾸기</span>`;
+      thumb.innerHTML = `<img src="${first}" alt="" />`;
+      text.innerHTML = `영수증 <b>${count}장 첨부됨</b><span class="rb-sub">탭해서 더 추가</span>`;
     } else {
       bar.className = "receipt-bar" + (receiptColMissing || d.editingId ? "" : " missing");
       thumb.innerHTML = "📷";
       text.innerHTML = `영수증 · 결제내역`
         + (receiptColMissing || d.editingId ? "" : ` <b>필수</b>`)
-        + `<span class="rb-sub">찍거나 사진첩에서 고르기</span>`;
+        + `<span class="rb-sub">찍거나 사진첩에서 고르기 · 여러 장 가능</span>`;
     }
+    renderReceiptThumbs();
   }
 
-  async function pickReceipt(file) {
-    if (!file) return;
+  // The strip under the bar — every photo bound for this save, stored or
+  // freshly picked, each with its own × so one wrong shot doesn't sink the
+  // whole batch.
+  function renderReceiptThumbs() {
+    const box = $("rb-thumbs");
+    const d = state.draft;
+    const items = d.receiptPaths.map((key) => ({ url: receiptUrl(key, true), remove: () => {
+      d.receiptPaths = d.receiptPaths.filter((k) => k !== key);
+    } }))
+      .concat(d.shots.map((shot) => ({ url: shot.preview, remove: () => {
+        URL.revokeObjectURL(shot.preview);
+        d.shots = d.shots.filter((s) => s !== shot);
+      } })));
+    box.style.display = items.length ? "flex" : "none";
+    box.innerHTML = "";
+    items.forEach((it) => {
+      const cell = document.createElement("span");
+      cell.className = "rbt";
+      cell.innerHTML = `<img src="${it.url}" alt="" />`;
+      const del = document.createElement("button");
+      del.type = "button";
+      del.setAttribute("aria-label", "이 사진 빼기");
+      del.textContent = "×";
+      del.onclick = (ev) => { ev.stopPropagation(); it.remove(); renderReceiptBar(); };
+      cell.appendChild(del);
+      box.appendChild(cell);
+    });
+  }
+
+  async function pickReceipt(fileList) {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
     const bar = $("receipt-bar");
     bar.disabled = true;
-    try {
-      const shot = await readShot(file);
-      if (state.draft.shot) URL.revokeObjectURL(state.draft.shot.preview);
-      state.draft.shot = shot;
-      renderReceiptBar();
-    } catch (err) {
-      toast(err.message || "사진을 처리하지 못했어요", true);
+    for (const file of files) {
+      try {
+        state.draft.shots.push(await readShot(file));
+      } catch (err) {
+        toast(err.message || "사진을 처리하지 못했어요", true);
+      }
     }
+    renderReceiptBar();
     bar.disabled = false;
-    $("receipt-file").value = ""; // same file twice must still fire change
+    $("receipt-file").value = ""; // the same file twice must still fire change
   }
 
   function renderWhen() {
@@ -1204,7 +1243,7 @@
            <b>migration-pot.sql</b>을 한 번 실행해 주세요.
            그때까지 공금이 사람 한 명으로 계산돼요.</div>`
         : "";
-    const noShot = receiptColMissing ? 0 : state.expenses.filter((e) => !e.receipt_path).length;
+    const noShot = receiptColMissing ? 0 : state.expenses.filter((e) => !receiptKeys(e).length).length;
     $("receipt-todo").innerHTML = noShot
       ? `<div class="tl-notice">📷 영수증이 없는 지출 <b>${noShot}건</b> — 지출을 탭해 붙일 수 있어요.</div>`
       : "";
@@ -1500,7 +1539,7 @@
     item.style.textAlign = "left";
     const badge = (e.settled ? ` · <span class="exp-badge">✓정산완료</span>` : "")
       + (isDeposit(e) ? ` · <span class="exp-badge">입금</span>` : "")
-      + ((!e.receipt_path && !receiptColMissing) ? ` · <span class="exp-badge todo">영수증 없음</span>` : "");
+      + ((!receiptKeys(e).length && !receiptColMissing) ? ` · <span class="exp-badge todo">영수증 없음</span>` : "");
     const est = isEstimated(e) ? ` · <span class="exp-est">⚡기준환율</span>` : "";
     // foreign currency keeps its original amount up front, with the KRW value underneath
     const krwLine = cur === "KRW" ? "" : `<span class="exp-krw">≈${money(krwAmount(e), "KRW")}</span>`;
@@ -1511,8 +1550,9 @@
     // the receipt stands in for the category tile, with the category kept as a
     // corner badge — the row can't get any wider on a phone
     const cat = EMOJI[e.category] || "💸";
-    const tile = e.receipt_path
-      ? `<span class="exp-emoji shot"><img src="${receiptUrl(e.receipt_path, true)}" alt="영수증"
+    const keys = receiptKeys(e);
+    const tile = keys.length
+      ? `<span class="exp-emoji shot"><img src="${receiptUrl(keys[0], true)}" alt="영수증"
            loading="lazy" /><span class="cat-badge">${cat}</span></span>`
       : `<span class="exp-emoji">${cat}</span>`;
     item.innerHTML = `
@@ -1529,7 +1569,7 @@
       shot.addEventListener("click", (ev) => {
         ev.stopPropagation();
         ev.preventDefault();
-        openShot(e.receipt_path);
+        openShot(keys, e);
       });
       // a half-finished upload would otherwise leave a broken-image icon
       // sitting where the category used to be
@@ -1541,15 +1581,74 @@
     return item;
   }
 
-  // ── receipt lightbox ──
-  function openShot(key) {
-    if (!key) return;
-    $("shot-img").src = receiptUrl(key, false);
+  // ── receipt lightbox / gallery ──
+  // `expense` is passed whenever these are a saved expense's photos (list tap,
+  // 영수증 보기): only then can one be deleted or another added, right there.
+  let galleryExpense = null;
+  function openShot(keys, expense) {
+    const list = Array.isArray(keys) ? keys : [keys];
+    if (!list.length) return;
+    galleryExpense = expense || null;
+    const strip = $("shot-strip");
+    strip.innerHTML = "";
+    list.forEach((key) => {
+      const item = document.createElement("div");
+      item.className = "sb-item";
+      item.innerHTML = `<img src="${receiptUrl(key, false)}" alt="영수증" />`;
+      if (galleryExpense) {
+        const del = document.createElement("button");
+        del.type = "button";
+        del.className = "sb-del";
+        del.setAttribute("aria-label", "이 영수증 지우기");
+        del.textContent = "×";
+        del.onclick = (ev) => { ev.stopPropagation(); deleteOneReceipt(galleryExpense, key); };
+        item.appendChild(del);
+      }
+      strip.appendChild(item);
+    });
+    $("shot-add").style.display = galleryExpense ? "block" : "none";
     $("shot-back").classList.add("show");
   }
   function closeShot() {
     $("shot-back").classList.remove("show");
-    $("shot-img").removeAttribute("src"); // stop a slow load once it's dismissed
+    $("shot-strip").innerHTML = ""; // stop any still-loading image once it's dismissed
+    galleryExpense = null;
+  }
+  function shotAddMore() {
+    if (!galleryExpense) return;
+    attachTo = galleryExpense;
+    $("attach-file").click();
+  }
+
+  // Writes an expense's full photo list back, degrading to the single legacy
+  // column on a database that predates migration-receipts-multi.sql.
+  async function saveReceiptPaths(e, keys) {
+    const patch = { receipt_paths: keys, receipt_path: keys[0] || null };
+    let { error } = await sb.from("expenses").update(sanitize(patch)).eq("id", e.id);
+    if (error && isMissingReceiptPathsCol(error) && !receiptPathsColMissing) {
+      receiptPathsColMissing = true;
+      ({ error } = await sb.from("expenses").update(sanitize(patch)).eq("id", e.id));
+    }
+    if (error) {
+      if (isMissingReceiptCol(error)) {
+        receiptColMissing = true;
+        toast("migration-receipt.sql 먼저 실행해 주세요", true);
+      } else toast("저장 실패: " + error.message, true);
+      return false;
+    }
+    e.receipt_paths = keys; e.receipt_path = keys[0] || null;
+    renderTimeline(); renderStatus();
+    return true;
+  }
+
+  async function deleteOneReceipt(e, key) {
+    if (!confirm("이 영수증 사진을 지울까요?")) return;
+    const remaining = receiptKeys(e).filter((k) => k !== key);
+    if (!(await saveReceiptPaths(e, remaining))) return;
+    if (remaining.length) openShot(remaining, e); else closeShot();
+    // Best-effort: an orphaned file costs storage space, not correctness, so
+    // its own failure must not undo a delete the person already saw happen.
+    sb.storage.from("receipts").remove([key + ".jpg", key + "_t.jpg"]).catch(() => {});
   }
 
   function renderExpenseList(listEl, items, emptyMsg) {
@@ -1671,7 +1770,7 @@
     const krw = (share === undefined) ? rowKrw(e) : share;
     const title = e.note || e.category || "지출";
     // 영수증이 없는 줄만 표시가 붙는다 — 나중에 채워야 할 것이 한눈에 보이도록
-    const todo = (!e.receipt_path && !receiptColMissing) ? '<i class="tlb-todo"></i>' : "";
+    const todo = (!receiptKeys(e).length && !receiptColMissing) ? '<i class="tlb-todo"></i>' : "";
     b.innerHTML = `<span class="tlb-t">${clockLabel(spentAt(e))}</span>
       <span class="tlb-n">${todo}${escapeHtml(title)}</span>
       <span class="tlb-a">${money(krw, "KRW")}</span>`;
@@ -1775,7 +1874,7 @@
     // rule doesn't — otherwise the 49 already in there become uneditable.
     // This gate comes BEFORE the currency question: it sends the user off to the
     // photo picker and back, and asking first would ask twice.
-    if (!d.editingId && !d.shot && !receiptColMissing) {
+    if (!d.editingId && d.shots.length === 0 && !receiptColMissing) {
       toast("영수증이나 결제내역을 첨부해 주세요", true);
       $("receipt-file").click();
       return;
@@ -1810,28 +1909,39 @@
     const btn = $("save-btn");
     btn.disabled = true;
 
-    // Upload before writing the row: if the photo can't be stored there must
-    // not be an expense pointing at nothing.
-    payload.receipt_path = d.receiptPath || null;
-    if (d.shot) {
+    // Upload before writing the row: a photo that can't be stored must not
+    // leave an expense pointing at nothing. Several photos may be freshly
+    // picked (d.shots) alongside ones this same expense already had from an
+    // earlier save (d.receiptPaths) — both end up in the row together.
+    payload.receipt_paths = d.receiptPaths.slice();
+    if (d.shots.length) {
       const label = btn.textContent;
       btn.textContent = "영수증 올리는 중…";
-      try {
-        payload.receipt_path = await uploadReceipt(d.shot);
-      } catch (err) {
-        btn.textContent = label;
-        // Losing the record is worse than losing the photo. On a bad connection
-        // the expense can go in now and the receipt can follow from the hotel
-        // wifi; the status screen counts what is still owed a photo.
-        if (!confirm("영수증을 올리지 못했어요 (" + ((err && err.message) || "연결 문제") + ").\n\n지출만 먼저 저장하고 영수증은 나중에 붙일까요?\n(현황 화면에 미첨부로 남습니다)")) {
+      const uploaded = [];
+      let uploadErr = null;
+      for (const shot of d.shots) {
+        try { uploaded.push(await uploadReceipt(shot)); }
+        catch (err) { uploadErr = err; break; }
+      }
+      btn.textContent = label;
+      payload.receipt_paths.push(...uploaded);
+      if (uploadErr) {
+        // Losing the record is worse than losing a photo. On a bad connection
+        // the expense can go in now and the rest of the photos can follow from
+        // the hotel wifi; the status screen counts what is still owed one.
+        const msg = uploaded.length
+          ? `영수증 ${d.shots.length}장 중 ${uploaded.length}장만 올렸어요 (${uploadErr.message || "연결 문제"}).\n\n올린 것만 저장하고 나머지는 나중에 추가할까요?`
+          : "영수증을 올리지 못했어요 (" + (uploadErr.message || "연결 문제") + ").\n\n지출만 먼저 저장하고 영수증은 나중에 붙일까요?\n(현황 화면에 미첨부로 남습니다)";
+        if (!confirm(msg)) {
           btn.disabled = false;
           toast("저장하지 않았어요 — 연결이 돌아오면 저장을 다시 눌러 주세요", true);
           return;
         }
-        payload.receipt_path = null;
       }
-      btn.textContent = label;
     }
+    // The first key doubles as the old single column, so a database that
+    // hasn't run migration-receipts-multi.sql yet still shows one photo.
+    payload.receipt_path = payload.receipt_paths[0] || null;
 
     // attach the exchange rate this expense settles at
     if (d.currency === "KRW") {
@@ -1870,6 +1980,7 @@
       if (isMissingRateCol(error) && !rateColsMissing) { rateColsMissing = true; dropped = true; }
       if (isMissingTimelineCol(error) && !timelineColsMissing) { timelineColsMissing = true; dropped = true; }
       if (isMissingReceiptCol(error) && !receiptColMissing) { receiptColMissing = true; dropped = true; }
+      if (isMissingReceiptPathsCol(error) && !receiptPathsColMissing) { receiptPathsColMissing = true; dropped = true; }
       if (isMissingHourCol(error) && !hourColMissing) { hourColMissing = true; dropped = true; }
       if (!dropped) break;
       ({ data: saved, error } = await send(sanitize(payload)));
@@ -1881,7 +1992,7 @@
     // rate columns is a deliberate choice here — the ⚡기준환율 badge and the
     // settlement note already say so, and repeating it on every single save is
     // just noise about a decision already made.
-    toast(timelineColsMissing || receiptColMissing || hourColMissing
+    toast(timelineColsMissing || receiptColMissing || receiptPathsColMissing || hourColMissing
       ? "저장됨 (일부 항목 미적용 — SQL 실행 필요)"
       : (d.editingId ? "수정됨" : "저장됨 ✓"));
     // reset for next entry
@@ -1928,7 +2039,8 @@
     $("modal-settle").textContent = e.settled ? "↩ 정산완료 해제" : "✓ 현장정산 완료로 표시";
     $("modal-rate").style.display = cur === "KRW" ? "none" : "block";
     $("modal-shot").style.display = receiptColMissing ? "none" : "block";
-    $("modal-shot").textContent = e.receipt_path ? "🧾 영수증 보기" : "📷 영수증 첨부";
+    { const n = receiptKeys(e).length;
+      $("modal-shot").textContent = n === 0 ? "📷 영수증 첨부" : (n === 1 ? "🧾 영수증 보기" : `🧾 영수증 보기 (${n}장)`); }
     $("modal-back").classList.add("show");
   }
 
@@ -1977,33 +2089,29 @@
   function modalShot() {
     const e = modalExpense;
     closeModal();
-    if (e.receipt_path) { openShot(e.receipt_path); return; }
+    const keys = receiptKeys(e);
+    if (keys.length) { openShot(keys, e); return; }
     attachTo = e;
     $("attach-file").click();
   }
 
-  async function attachReceipt(file) {
+  async function attachReceipt(fileList) {
     const e = attachTo;
     attachTo = null;
+    const files = Array.from(fileList || []);
     $("attach-file").value = "";
-    if (!e || !file) return;
+    if (!e || !files.length) return;
     toast("영수증 올리는 중…");
-    let key;
-    try {
-      key = await uploadReceipt(await readShot(file));
-    } catch (err) {
-      toast(err.message || "업로드 실패 — 연결을 확인해 주세요", true);
-      return;
+    const uploaded = [];
+    for (const file of files) {
+      try { uploaded.push(await uploadReceipt(await readShot(file))); }
+      catch (err) { toast(err.message || "업로드 실패 — 연결을 확인해 주세요", true); break; }
     }
-    const { error } = await sb.from("expenses").update({ receipt_path: key }).eq("id", e.id);
-    if (error) {
-      if (isMissingReceiptCol(error)) {
-        receiptColMissing = true;
-        toast("migration-receipt.sql 먼저 실행해 주세요", true);
-      } else toast("저장 실패: " + error.message, true);
-      return;
-    }
-    toast("영수증 첨부됨 ✓");
+    if (!uploaded.length) return;
+    const merged = receiptKeys(e).concat(uploaded);
+    if (!(await saveReceiptPaths(e, merged))) return;
+    toast(uploaded.length > 1 ? `영수증 ${uploaded.length}장 첨부됨 ✓` : "영수증 첨부됨 ✓");
+    if (galleryExpense === e) openShot(merged, e); // stay open, now showing the new ones too
     await refetch();
   }
 
@@ -2022,7 +2130,7 @@
     // three-day-old expense invents a fact.
     state.draft.spentAt = spentAt(e);
     state.draft.whenTouched = true;
-    state.draft.receiptPath = e.receipt_path || null;
+    state.draft.receiptPaths = receiptKeys(e).slice();
     closeModal();
     show("screen-input");
     $("amount").value = fmt(e.amount);
@@ -2628,6 +2736,12 @@
     } catch (err) {
       receiptColMissing = false;
     }
+    try {
+      const probe2 = await sb.from("expenses").select("receipt_paths").limit(1);
+      receiptPathsColMissing = isMissingReceiptPathsCol(probe2.error);
+    } catch (err) {
+      receiptPathsColMissing = false;
+    }
     await refetch();
     subscribeRealtime();
     // refresh the room's fallback rate in the background; re-render if it moved
@@ -2818,8 +2932,9 @@
 
     // receipts
     $("receipt-bar").onclick = () => $("receipt-file").click();
-    $("receipt-file").addEventListener("change", (e) => pickReceipt(e.target.files[0]));
-    $("attach-file").addEventListener("change", (e) => attachReceipt(e.target.files[0]));
+    $("receipt-file").addEventListener("change", (e) => pickReceipt(e.target.files));
+    $("attach-file").addEventListener("change", (e) => attachReceipt(e.target.files));
+    $("shot-add").onclick = shotAddMore;
     $("shot-back").onclick = (e) => { if (e.target !== $("shot-img")) closeShot(); };
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && $("shot-back").classList.contains("show")) closeShot();

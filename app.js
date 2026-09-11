@@ -279,7 +279,7 @@
     return out;
   }
 
-  const BELL = `<svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none"
+  const BELL = `<svg class="ico" aria-hidden="true" viewBox="0 0 24 24" width="15" height="15" fill="none"
       stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
       <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>`;
 
@@ -292,6 +292,7 @@
     const denied = canPush() && Notification.permission === "denied";
     const on = pushOn();
     b.classList.toggle("on", on);
+    b.setAttribute("aria-pressed", on ? "true" : "false");
     b.innerHTML = BELL + `<span>${on ? "알림 켜짐" : (denied ? "알림 차단됨" : "알림 받기")}</span>`;
   }
 

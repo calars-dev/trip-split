@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="robots" content="noindex, nofollow" />
+<meta name="theme-color" content="#000000" />
+<title>이시가키 정산</title>
+<style>
+  :root {
+    --bg: #000000;
+    --surface: #1C1C1E;
+    --surface-2: #2C2C2E;
+    --line: #38383A;
+    --text: #FFFFFF;
+    --muted: rgba(235, 235, 245, .62);
+    --faint: rgba(235, 235, 245, .32);
+    --accent: #0A84FF;
+    --pos: #30D158;
+    --neg: #FF453A;
+    --warn: #FF9F0A;
+    --radius: 16px;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Pretendard", "Malgun Gothic", sans-serif;
+    font-size: 16px; line-height: 1.45; -webkit-font-smoothing: antialiased;
+    padding: env(safe-area-inset-top, 0) 0 calc(env(safe-area-inset-bottom, 0px) + 40px);
+  }
+  button { font: inherit; color: inherit; cursor: pointer; border: none; background: none; }
+  .wrap { max-width: 560px; margin: 0 auto; padding: 0 16px; }
+  header { padding: 28px 0 8px; }
+  h1 { font-size: 28px; font-weight: 700; letter-spacing: -.02em; margin: 0; }
+  .sub { color: var(--muted); font-size: 14px; margin-top: 4px; }
+  h2 { font-size: 13px; font-weight: 600; color: var(--muted); letter-spacing: .02em; margin: 28px 4px 8px; }
+  .card { background: var(--surface); border-radius: var(--radius); padding: 16px; }
+  .card + .card { margin-top: 10px; }
+  .num { font-variant-numeric: tabular-nums; }
+
+  /* name picker */
+  .names { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  .names button {
+    background: var(--surface); border-radius: 12px; padding: 12px 4px; font-size: 15px;
+    transition: background-color .15s ease, transform .1s ease;
+  }
+  .names button:active { transform: scale(.96); }
+  .names button[aria-pressed="true"] { background: var(--accent); font-weight: 600; }
+
+  /* my result */
+  #me[hidden] { display: none; }
+  .verdict { padding: 20px 16px; }
+  .verdict .label { color: var(--muted); font-size: 14px; }
+  .verdict .big { font-size: 32px; font-weight: 700; letter-spacing: -.02em; margin-top: 2px; }
+  .pos { color: var(--pos); } .neg { color: var(--neg); }
+  .send {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 14px 0; border-top: 1px solid var(--line);
+  }
+  .send:first-of-type { border-top: none; }
+  .send .who { font-size: 17px; font-weight: 600; }
+  .send .amt { font-size: 17px; font-weight: 600; }
+  .send small { display: block; color: var(--muted); font-size: 13px; font-weight: 400; }
+  .copy {
+    background: var(--surface-2); border-radius: 10px; padding: 8px 12px; font-size: 14px;
+    color: var(--accent); flex-shrink: 0; min-height: 36px;
+  }
+  .copy.done { color: var(--pos); }
+
+  /* explanation */
+  .eq { display: grid; grid-template-columns: 1fr auto; row-gap: 8px; column-gap: 12px; }
+  .eq .k { color: var(--muted); }
+  .eq .v { text-align: right; }
+  .eq .t { font-weight: 600; color: var(--text); }
+  .eq .ind { padding-left: 14px; font-size: 14px; }
+  .eq hr { grid-column: 1 / -1; border: none; border-top: 1px solid var(--line); margin: 4px 0; width: 100%; }
+  .note { color: var(--muted); font-size: 14px; margin-top: 12px; }
+
+  /* item list */
+  .day { font-size: 13px; color: var(--muted); margin: 18px 4px 6px; }
+  .item { display: grid; grid-template-columns: 1fr auto; column-gap: 12px; padding: 11px 0; border-top: 1px solid var(--line); }
+  .item:first-child { border-top: none; }
+  .item .n { font-size: 15px; }
+  .item .m { color: var(--muted); font-size: 13px; }
+  .item .s { text-align: right; font-size: 15px; }
+  .item .s small { display: block; color: var(--muted); font-size: 12px; }
+  .item.off .n, .item.off .s { color: var(--faint); }
+  .tag { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 6px; background: var(--surface-2); color: var(--muted); margin-left: 4px; vertical-align: 1px; }
+  .tag.pot { color: var(--accent); }
+  .tag.mine { color: var(--pos); }
+
+  .tabs { display: flex; background: var(--surface); border-radius: 10px; padding: 2px; margin: 0 0 10px; }
+  .tabs button { flex: 1; padding: 8px; border-radius: 8px; font-size: 14px; color: var(--muted); transition: background-color .15s ease; }
+  .tabs button[aria-selected="true"] { background: var(--surface-2); color: var(--text); font-weight: 600; }
+
+  .tr { display: grid; grid-template-columns: 1fr auto; padding: 11px 0; border-top: 1px solid var(--line); }
+  .tr:first-child { border-top: none; }
+  .tr.hl { color: var(--text); font-weight: 600; }
+  .tr.dim { color: var(--muted); }
+  .warnbox { border-left: 3px solid var(--warn); }
+  details summary { cursor: pointer; color: var(--accent); font-size: 15px; list-style: none; padding: 4px 0; }
+  details summary::-webkit-details-marker { display: none; }
+
+  .fade { animation: fade .22s ease-out; }
+  @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) {
+    .fade { animation: none; }
+    .names button, .tabs button { transition: none; }
+  }
+  footer { color: var(--faint); font-size: 12px; margin-top: 32px; text-align: center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>이시가키 정산</h1>
+    <div class="sub">2026.9.13 – 9.17 · 14명 · 정산 앱 기록 기준</div>
+  </header>
+
+  <h2>내 이름을 누르세요</h2>
+  <div class="names" id="names" role="group" aria-label="이름 선택"></div>
+
+  <section id="me" hidden aria-live="polite"></section>
+
+  <h2>공금은 이렇게 썼어요</h2>
+  <div class="card" id="pot"></div>
+
+  <h2>전체 송금 목록 · 13건</h2>
+  <div class="card" id="all"></div>
+
+  <footer>정산 앱 기록(9/25 기준)으로 만든 페이지입니다. 틀린 기록이 있으면 총무에게 말해 주세요.</footer>
+</div>
+
+<script>
+const D = {"people": ["이수형", "성재훈", "박상혁", "김준호", "김우성", "오수환", "이재윤", "장인태", "도자", "김동욱", "지승현", "권오훈", "정원호", "이중민"], "treasurer": "이수형", "potLeft": 622364, "balance": {"이수형": 125104, "성재훈": 48930, "박상혁": -212043, "김준호": -440784, "김우성": -273855, "오수환": 45477, "이재윤": -110314, "장인태": -116969, "도자": -147539, "김동욱": -109386, "지승현": 68879, "권오훈": -225302, "정원호": 143068, "이중민": 1827098}, "net": {"이수형": -497260, "성재훈": 48930, "박상혁": -212043, "김준호": -440784, "김우성": -273855, "오수환": 45477, "이재윤": -110314, "장인태": -116969, "도자": -147539, "김동욱": -109386, "지승현": 68879, "권오훈": -225302, "정원호": 143068, "이중민": 1827098}, "transfers": [{"from": "이수형", "to": "정원호", "amt": 143068}, {"from": "이수형", "to": "지승현", "amt": 68879}, {"from": "이수형", "to": "성재훈", "amt": 48930}, {"from": "이수형", "to": "오수환", "amt": 45477}, {"from": "박상혁", "to": "이중민", "amt": 212043}, {"from": "김준호", "to": "이중민", "amt": 440784}, {"from": "김우성", "to": "이중민", "amt": 273855}, {"from": "이재윤", "to": "이중민", "amt": 110314}, {"from": "장인태", "to": "이중민", "amt": 116969}, {"from": "도자", "to": "이중민", "amt": 147539}, {"from": "김동욱", "to": "이중민", "amt": 109386}, {"from": "권오훈", "to": "이중민", "amt": 225302}, {"from": "이수형", "to": "이중민", "amt": 190906}], "rows": [{"day": 0, "at": "2026-08-13T10:36:14.292623+00:00", "cat": "기타", "note": "회비 도자", "payer": "도자", "amt": 500000, "cur": "KRW", "krw": 500000, "shares": {"공금": 500000}, "settled": false, "fee": true}, {"day": 0, "at": "2026-08-13T10:36:14.292623+00:00", "cat": "기타", "note": "회비 이중민", "payer": "이중민", "amt": 500000, "cur": "KRW", "krw": 500000, "shares": {"공금": 500000}, "settled": false, "fee": true}, {"day": 0, "at": "2026-08-13T10:36:14.292623+00:00", "cat": "기타", "note": "회비 이재윤", "payer": "이재윤", "amt": 500000, "cur": "KRW", "krw": 500000, "shares": {"공금": 500000}, "settled": false, "fee": true}, {"day": 0, "at": "2026-08-13T10:36:14.292623+00:00", "cat": "기타", "note": "회비 오수환", "payer": "오수환", "amt": 500000, "cur": "KRW", "krw": 500000, "shares": {"공금": 500000}, "settled": false, "fee": true}, {"day": 0, "at": "2026-08-13T10:36:14.292623+00:00", "cat": "기타", "note": "회비 성재훈", "payer": "성재훈", "amt": 500000, "cur": "KRW", "krw": 500000, "shares": {"공금": 500000}, "settled": false, "fee": true}, {"day": 0, "at": "2026-08-13T10:36:14.292623+00:00", "cat": "기타", "note": "회비 김준호", "payer": "김준호", "amt": 500000, "cur": "KRW", "krw": 500000, "shares": {"공금": 500000}, "settled": false, "fee": true}, {"day": 0, "at": "2026-08-13T10:36:14.292623+00:00", "cat": "기타", "note": "회비 박상혁", "payer": "박상혁", "amt": 500000, "cur": "KRW", "krw": 500000, "shares": {"공금": 500000}, "settled": false, "fee": true}, {"day": 0, "at": "2026-08-13T10:36:14.292623+00:00", "cat": "숙소", "note": "숙소 (출발 전 결제)", "payer": "공금", "amt": 4187787, "cur": "KRW", "krw": 4187787, "shares": {"이수형": 299128, "김동욱": 299128, "김우성": 299128, "김준호": 299128, "도자": 299128, "박상혁": 299128, "성재훈": 299128, "오수환": 299128, "이재윤": 299128, "이중민": 299128, "장인태": 299128, "정원호": 299128, "지승현": 299128, "권오훈": 299123}, "settled": false, "fee": false}, {"day": 0, "at": "2026-08-13T10:36:14.292623+00:00", "cat": "기타", "note": "회비 권오훈", "payer": "권오훈", "amt": 500000, "cur": "KRW", "krw": 500000, "shares": {"공금": 500000}, "settled": false, "fee": true}, {"day": 0, "at": "2026-08-13T10:36:14.292623+00:00", "cat": "기타", "note": "회비 지승현", "payer": "지승현", "amt": 500000, "cur": "KRW", "krw": 500000, "shares": {"공금": 500000}, "settled": false, "fee": true}, {"day": 0, "at": "2026-08-13T10:36:14.292623+00:00", "cat": "기타", "note": "회비 이수형", "payer": "이수형", "amt": 500000, "cur": "KRW", "krw": 500000, "shares": {"공금": 500000}, "settled": false, "fee": true}, {"day": 0, "at": "2026-08-13T10:36:14.292623+00:00", "cat": "기타", "note": "회비 김동욱", "payer": "김동욱", "amt": 500000, "cur": "KRW", "krw": 500000, "shares": {"공금": 500000}, "settled": false, "fee": true}, {"day": 0, "at": "2026-08-13T10:36:14.292623+00:00", "cat": "기타", "note": "회비 김우성", "payer": "김우성", "amt": 500000, "cur": "KRW", "krw": 500000, "shares": {"공금": 500000}, "settled": false, "fee": true}, {"day": 0, "at": "2026-08-13T10:36:14.292623+00:00", "cat": "기타", "note": "회비 정원호", "payer": "정원호", "amt": 500000, "cur": "KRW", "krw": 500000, "shares": {"공금": 500000}, "settled": false, "fee": true}, {"day": 0, "at": "2026-08-13T10:36:14.292623+00:00", "cat": "기타", "note": "회비 장인태", "payer": "장인태", "amt": 500000, "cur": "KRW", "krw": 500000, "shares": {"공금": 500000}, "settled": false, "fee": true}, {"day": 0, "at": "2026-09-11T13:16:07.542+00:00", "cat": "기타", "note": "공용 물품", "payer": "공금", "amt": 50470, "cur": "KRW", "krw": 50470, "shares": {"이수형": 3605, "권오훈": 3605, "김준호": 3605, "김우성": 3605, "오수환": 3605, "이재윤": 3605, "정원호": 3605, "김동욱": 3605, "지승현": 3605, "성재훈": 3605, "장인태": 3605, "이중민": 3605, "박상혁": 3605, "도자": 3605}, "settled": false, "fee": false}, {"day": 1, "at": "2026-09-13T04:50:04.019+00:00", "cat": "마트", "note": "마트_석식관련", "payer": "정원호", "amt": 80259, "cur": "KRW", "krw": 80259, "shares": {"이수형": 5733, "김준호": 5733, "김우성": 5733, "오수환": 5733, "이재윤": 5733, "정원호": 5733, "지승현": 5733, "권오훈": 5733, "성재훈": 5733, "장인태": 5733, "이중민": 5733, "박상혁": 5733, "도자": 5733, "김동욱": 5730}, "settled": false, "fee": false}, {"day": 1, "at": "2026-09-13T04:51:00.234+00:00", "cat": "기타", "note": "배멀미약", "payer": "정원호", "amt": 14410, "cur": "KRW", "krw": 14410, "shares": {"이수형": 1310, "김우성": 1310, "오수환": 1310, "이재윤": 1310, "정원호": 1310, "권오훈": 1310, "성재훈": 1310, "장인태": 1310, "이중민": 1310, "박상혁": 1310, "김동욱": 1310}, "settled": false, "fee": false}, {"day": 1, "at": "2026-09-13T04:51:49.22+00:00", "cat": "마트", "note": "얼음", "payer": "정원호", "amt": 3442, "cur": "KRW", "krw": 3442, "shares": {"이수형": 246, "김준호": 246, "김우성": 246, "오수환": 246, "이재윤": 246, "정원호": 246, "지승현": 246, "권오훈": 246, "성재훈": 246, "장인태": 246, "이중민": 246, "박상혁": 246, "도자": 246, "김동욱": 244}, "settled": false, "fee": false}, {"day": 1, "at": "2026-09-13T05:50:12.439+00:00", "cat": "식비", "note": "점심", "payer": "성재훈", "amt": 5644, "cur": "JPY", "krw": 49200, "shares": {"권오훈": 12300, "지승현": 12300, "성재훈": 12300, "도자": 12300}, "settled": false, "fee": false}, {"day": 1, "at": "2026-09-13T05:51:03.65+00:00", "cat": "교통", "note": "렌트카", "payer": "공금", "amt": 158620, "cur": "JPY", "krw": 1382738, "shares": {"이수형": 98767, "권오훈": 98767, "김준호": 98767, "김우성": 98767, "오수환": 98767, "이재윤": 98767, "정원호": 98767, "김동욱": 98767, "지승현": 98767, "성재훈": 98767, "장인태": 98767, "이중민": 98767, "박상혁": 98767, "도자": 98767}, "settled": false, "fee": false}, {"day": 1, "at": "2026-09-13T05:51:07.115+00:00", "cat": "식비", "note": "첫날 점심 원호인태", "payer": "장인태", "amt": 3454, "cur": "JPY", "krw": 30110, "shares": {"장인태": 15055, "정원호": 15055}, "settled": false, "fee": false}, {"day": 1, "at": "2026-09-13T06:32:01.328+00:00", "cat": "마트", "note": "1일차 저녁 파트1", "payer": "공금", "amt": 15896, "cur": "JPY", "krw": 138570, "shares": {"이수형": 9898, "권오훈": 9898, "김준호": 9898, "김우성": 9898, "오수환": 9898, "이재윤": 9898, "정원호": 9898, "김동욱": 9898, "지승현": 9898, "성재훈": 9898, "장인태": 9898, "이중민": 9898, "박상혁": 9898, "도자": 9896}, "settled": false, "fee": false}, {"day": 1, "at": "2026-09-13T06:33:04.979+00:00", "cat": "마트", "note": "1일차 저녁 장보기", "payer": "지승현", "amt": 8757, "cur": "JPY", "krw": 76337, "shares": {"이수형": 5453, "김준호": 5453, "김우성": 5453, "오수환": 5453, "이재윤": 5453, "정원호": 5453, "김동욱": 5453, "권오훈": 5453, "지승현": 5453, "성재훈": 5453, "장인태": 5453, "이중민": 5453, "박상혁": 5453, "도자": 5448}, "settled": false, "fee": false}, {"day": 1, "at": "2026-09-13T06:58:38.116+00:00", "cat": "식비", "note": "킴코스밥", "payer": "김동욱", "amt": 1778, "cur": "JPY", "krw": 15499, "shares": {"김준호": 15499}, "settled": false, "fee": false}, {"day": 1, "at": "2026-09-13T10:58:44.154+00:00", "cat": "교통", "note": "해수욕장 주차장", "payer": "장인태", "amt": 500, "cur": "JPY", "krw": 4359, "shares": {"이수형": 311, "김준호": 311, "김우성": 311, "오수환": 311, "이재윤": 311, "정원호": 311, "김동욱": 311, "권오훈": 311, "지승현": 311, "성재훈": 311, "장인태": 311, "이중민": 311, "박상혁": 311, "도자": 316}, "settled": false, "fee": false}, {"day": 1, "at": "2026-09-13T13:22:00+00:00", "cat": "기타", "note": "거북이투어", "payer": "이중민", "amt": 189694, "cur": "JPY", "krw": 1663313, "shares": {"이수형": 138609, "김우성": 138609, "오수환": 138609, "이재윤": 138609, "정원호": 138609, "권오훈": 138609, "성재훈": 138609, "장인태": 138609, "이중민": 138609, "박상혁": 138609, "도자": 138609, "김동욱": 138614}, "settled": false, "fee": false}, {"day": 2, "at": "2026-09-14T06:42:38.27+00:00", "cat": "식비", "note": "투어 후 편의덤", "payer": "공금", "amt": 7186, "cur": "JPY", "krw": 62643, "shares": {"이수형": 4474, "김준호": 4474, "김우성": 4474, "오수환": 4474, "이재윤": 4474, "정원호": 4474, "김동욱": 4474, "권오훈": 4474, "지승현": 4474, "성재훈": 4474, "장인태": 4474, "이중민": 4474, "박상혁": 4474, "도자": 4481}, "settled": false, "fee": false}, {"day": 2, "at": "2026-09-14T10:57:17.84+00:00", "cat": "식비", "note": "2일차 저녁 야끼니쿠", "payer": "지승현", "amt": 25300, "cur": "JPY", "krw": 220548, "shares": {"김동욱": 55137, "권오훈": 55137, "이재윤": 55137, "지승현": 55137}, "settled": true, "fee": false}, {"day": 2, "at": "2026-09-14T10:57:56.135+00:00", "cat": "카페", "note": "밀크수ㅐ이크", "payer": "이수형", "amt": 1920, "cur": "JPY", "krw": 16737, "shares": {"이수형": 4184, "김준호": 4184, "김우성": 4184, "성재훈": 4185}, "settled": false, "fee": false}, {"day": 2, "at": "2026-09-14T11:00:07.675+00:00", "cat": "식비", "note": "저녁 고기", "payer": "이중민", "amt": 26840, "cur": "JPY", "krw": 233972, "shares": {"장인태": 77991, "박상혁": 77991, "이중민": 77990}, "settled": false, "fee": false}, {"day": 2, "at": "2026-09-14T11:01:20.71+00:00", "cat": "식비", "note": "야끼니쿠 수형팀", "payer": "이수형", "amt": 317672, "cur": "KRW", "krw": 317672, "shares": {"이수형": 79418, "김우성": 79418, "성재훈": 79418, "김준호": 79418}, "settled": false, "fee": false}, {"day": 2, "at": "2026-09-14T11:03:13.798+00:00", "cat": "카페", "note": "밀크쉐이크", "payer": "이재윤", "amt": 3360, "cur": "JPY", "krw": 29290, "shares": {"이재윤": 4184, "김동욱": 4184, "권오훈": 4184, "지승현": 4184, "장인태": 4184, "이중민": 4184, "박상혁": 4186}, "settled": false, "fee": false}, {"day": 2, "at": "2026-09-14T11:20:48.481+00:00", "cat": "술", "note": "야끼니꾸", "payer": "도자", "amt": 209096, "cur": "KRW", "krw": 209096, "shares": {"오수환": 104548, "정원호": 104548}, "settled": true, "fee": false}, {"day": 3, "at": "2026-09-14T23:35:32.969+00:00", "cat": "식비", "note": "배타기전 편의점", "payer": "이중민", "amt": 2297, "cur": "JPY", "krw": 20008, "shares": {"김준호": 2501, "이재윤": 2501, "정원호": 2501, "권오훈": 2501, "성재훈": 2501, "장인태": 2501, "이중민": 2501, "김동욱": 2501}, "settled": false, "fee": false}, {"day": 3, "at": "2026-09-15T01:26:00+00:00", "cat": "기타", "note": "자전거대여", "payer": "이중민", "amt": 12000, "cur": "JPY", "krw": 105221, "shares": {"김준호": 13153, "김우성": 13153, "정원호": 13153, "권오훈": 13153, "성재훈": 13153, "장인태": 13153, "이중민": 13153, "김동욱": 13150}, "settled": false, "fee": false}, {"day": 3, "at": "2026-09-15T03:48:03.925+00:00", "cat": "식비", "note": "쿠로시마 팀 식비", "payer": "장인태", "amt": 15200, "cur": "JPY", "krw": 132403, "shares": {"김준호": 16550, "김우성": 16550, "정원호": 16550, "권오훈": 16550, "성재훈": 16550, "장인태": 16550, "이중민": 16550, "김동욱": 16553}, "settled": false, "fee": false}, {"day": 3, "at": "2026-09-15T04:04:46.852+00:00", "cat": "기타", "note": "출금", "payer": "성재훈", "amt": 10000, "cur": "JPY", "krw": 87107, "shares": {"김준호": 87107}, "settled": false, "fee": false}, {"day": 3, "at": "2026-09-15T04:12:41.935+00:00", "cat": "교통", "note": "쿠로시마 주차장", "payer": "장인태", "amt": 500, "cur": "JPY", "krw": 4355, "shares": {"김준호": 544, "김우성": 544, "정원호": 544, "권오훈": 544, "성재훈": 544, "장인태": 544, "이중민": 544, "김동욱": 547}, "settled": false, "fee": false}, {"day": 3, "at": "2026-09-15T04:33:14.049+00:00", "cat": "카페", "note": "あんぱるCafe", "payer": "정원호", "amt": 53663, "cur": "KRW", "krw": 53663, "shares": {"김준호": 6708, "김우성": 6708, "정원호": 6708, "권오훈": 6708, "성재훈": 6708, "장인태": 6708, "이중민": 6708, "김동욱": 6707}, "settled": false, "fee": false}, {"day": 3, "at": "2026-09-15T04:41:15.447+00:00", "cat": "마트", "note": "편의점 커피", "payer": "김우성", "amt": 750, "cur": "JPY", "krw": 6533, "shares": {"김준호": 817, "김우성": 817, "정원호": 817, "권오훈": 817, "성재훈": 817, "장인태": 817, "김동욱": 817, "이중민": 814}, "settled": false, "fee": false}, {"day": 3, "at": "2026-09-15T04:42:24.38+00:00", "cat": "식비", "note": "라멘과 초밥", "payer": "오수환", "amt": 3580, "cur": "JPY", "krw": 31184, "shares": {"이수형": 15592, "오수환": 15592}, "settled": false, "fee": false}, {"day": 3, "at": "2026-09-15T05:12:26.233+00:00", "cat": "식비", "note": "3일차 점심", "payer": "지승현", "amt": 9500, "cur": "JPY", "krw": 82752, "shares": {"지승현": 20688, "이재윤": 20688, "도자": 20688, "박상혁": 20688}, "settled": true, "fee": false}, {"day": 3, "at": "2026-09-15T05:20:26.096+00:00", "cat": "카페", "note": "일본푸딩", "payer": "오수환", "amt": 2000, "cur": "JPY", "krw": 17421, "shares": {"오수환": 8710, "이수형": 8711}, "settled": false, "fee": false}, {"day": 3, "at": "2026-09-15T06:33:00+00:00", "cat": "교통", "note": "주차비", "payer": "이중민", "amt": 200, "cur": "JPY", "krw": 1754, "shares": {"김준호": 219, "김우성": 219, "정원호": 219, "성재훈": 219, "장인태": 219, "이중민": 219, "김동욱": 219, "권오훈": 221}, "settled": false, "fee": false}, {"day": 3, "at": "2026-09-15T08:18:00+00:00", "cat": "기타", "note": "야이마무라(원숭이)", "payer": "정원호", "amt": 85583, "cur": "KRW", "krw": 85583, "shares": {"김준호": 10698, "김우성": 10698, "정원호": 10698, "권오훈": 10698, "성재훈": 10698, "장인태": 10698, "이중민": 10698, "김동욱": 10697}, "settled": false, "fee": false}, {"day": 3, "at": "2026-09-15T08:48:18.396+00:00", "cat": "선물", "note": "수환카드", "payer": "이수형", "amt": 400, "cur": "JPY", "krw": 3484, "shares": {"오수환": 3484}, "settled": false, "fee": false}, {"day": 3, "at": "2026-09-15T08:49:07.542+00:00", "cat": "카페", "note": "빙수 카페", "payer": "이수형", "amt": 44350, "cur": "KRW", "krw": 44350, "shares": {"이수형": 7392, "오수환": 7392, "이재윤": 7392, "지승현": 7392, "도자": 7392, "박상혁": 7390}, "settled": false, "fee": false}, {"day": 3, "at": "2026-09-15T10:51:00+00:00", "cat": "식비", "note": "야키토리 현금지불", "payer": "이중민", "amt": 10000, "cur": "JPY", "krw": 87684, "shares": {"김준호": 10960, "김우성": 10960, "정원호": 10960, "권오훈": 10960, "성재훈": 10960, "장인태": 10960, "이중민": 10960, "김동욱": 10964}, "settled": false, "fee": false}, {"day": 3, "at": "2026-09-15T11:48:54.994+00:00", "cat": "기타", "note": "9/15 야끼토리 1/4", "payer": "김동욱", "amt": 10000, "cur": "JPY", "krw": 87107, "shares": {"김준호": 10888, "김우성": 10888, "정원호": 10888, "권오훈": 10888, "성재훈": 10888, "장인태": 10888, "이중민": 10888, "김동욱": 10891}, "settled": false, "fee": false}, {"day": 3, "at": "2026-09-15T11:51:54.85+00:00", "cat": "식비", "note": "야끼토리", "payer": "김우성", "amt": 2000, "cur": "JPY", "krw": 17421, "shares": {"김준호": 2489, "정원호": 2489, "권오훈": 2489, "성재훈": 2489, "장인태": 2489, "이중민": 2489, "김동욱": 2487}, "settled": false, "fee": false}, {"day": 3, "at": "2026-09-15T13:00:00+00:00", "cat": "마트", "note": "3일차 돈키호테", "payer": "오수환", "amt": 17740, "cur": "JPY", "krw": 155551, "shares": {"이수형": 11111, "김준호": 11111, "김우성": 11111, "오수환": 11111, "이재윤": 11111, "정원호": 11111, "지승현": 11111, "권오훈": 11111, "성재훈": 11111, "장인태": 11111, "이중민": 11111, "박상혁": 11111, "도자": 11111, "김동욱": 11108}, "settled": false, "fee": false}, {"day": 3, "at": "2026-09-15T13:19:31.007+00:00", "cat": "카페", "note": "3일차 블루쉘 (승현)", "payer": "지승현", "amt": 1840, "cur": "JPY", "krw": 16028, "shares": {"도자": 4007, "박상혁": 4007, "지승현": 4007, "이재윤": 4007}, "settled": true, "fee": false}, {"day": 3, "at": "2026-09-15T14:51:00+00:00", "cat": "교통", "note": "주차비", "payer": "이재윤", "amt": 7000, "cur": "KRW", "krw": 7000, "shares": {"이수형": 1167, "오수환": 1167, "이재윤": 1167, "성재훈": 1167, "지승현": 1167, "박상혁": 1165}, "settled": false, "fee": false}, {"day": 4, "at": "2026-09-16T02:06:00+00:00", "cat": "마트", "note": "포켓몬 카드", "payer": "이재윤", "amt": 1049, "cur": "JPY", "krw": 9315, "shares": {"이수형": 3105, "김준호": 3105, "이재윤": 3105}, "settled": false, "fee": false}, {"day": 4, "at": "2026-09-16T03:52:53.132+00:00", "cat": "식비", "note": "스테이크", "payer": "이재윤", "amt": 22660, "cur": "JPY", "krw": 198692, "shares": {"김준호": 49673, "이재윤": 49673, "장인태": 49673, "박상혁": 49673}, "settled": true, "fee": false}, {"day": 4, "at": "2026-09-16T04:51:08.921+00:00", "cat": "선물", "note": "빌라봉", "payer": "성재훈", "amt": 16698, "cur": "JPY", "krw": 146415, "shares": {"김준호": 146415}, "settled": false, "fee": false}, {"day": 4, "at": "2026-09-16T05:05:41.187+00:00", "cat": "선물", "note": "열쇠고리", "payer": "김우성", "amt": 3200, "cur": "JPY", "krw": 28059, "shares": {"김준호": 28059}, "settled": false, "fee": false}, {"day": 4, "at": "2026-09-16T05:08:27.587+00:00", "cat": "선물", "note": "태닝짱구", "payer": "성재훈", "amt": 9000, "cur": "JPY", "krw": 78916, "shares": {"김준호": 39458, "김우성": 39458}, "settled": false, "fee": false}, {"day": 4, "at": "2026-09-16T05:23:20.81+00:00", "cat": "기타", "note": "요거트 푸딩", "payer": "장인태", "amt": 2880, "cur": "JPY", "krw": 25253, "shares": {"이수형": 8418, "이재윤": 8418, "장인태": 8417}, "settled": false, "fee": false}, {"day": 4, "at": "2026-09-16T07:23:20.635+00:00", "cat": "마트", "note": "편의점", "payer": "김준호", "amt": 4471, "cur": "JPY", "krw": 39204, "shares": {"이수형": 7841, "김준호": 7841, "이재윤": 7841, "도자": 7841, "성재훈": 7840}, "settled": false, "fee": false}, {"day": 4, "at": "2026-09-16T10:32:00+00:00", "cat": "교통", "note": "주차비", "payer": "이중민", "amt": 700, "cur": "JPY", "krw": 6138, "shares": {"김준호": 1023, "오수환": 1023, "정원호": 1023, "권오훈": 1023, "이중민": 1023, "지승현": 1023}, "settled": false, "fee": false}, {"day": 4, "at": "2026-09-16T10:37:49.61+00:00", "cat": "식비", "note": "마지막 저녁", "payer": "공금", "amt": 59312, "cur": "JPY", "krw": 520071, "shares": {"이수형": 37148, "김준호": 37148, "김우성": 37148, "오수환": 37148, "이재윤": 37148, "정원호": 37148, "지승현": 37148, "권오훈": 37148, "성재훈": 37148, "장인태": 37148, "이중민": 37148, "박상혁": 37148, "도자": 37148, "김동욱": 37147}, "settled": false, "fee": false}, {"day": 4, "at": "2026-09-16T14:45:01.999+00:00", "cat": "식비", "note": "야키토리 만엔", "payer": "정원호", "amt": 10000, "cur": "JPY", "krw": 87684, "shares": {"김준호": 10960, "김우성": 10960, "정원호": 10960, "권오훈": 10960, "성재훈": 10960, "이중민": 10960, "김동욱": 10960, "장인태": 10964}, "settled": false, "fee": false}, {"day": 4, "at": "2026-09-16T14:54:25.972+00:00", "cat": "교통", "note": "주차", "payer": "공금", "amt": 400, "cur": "JPY", "krw": 3507, "shares": {"이수형": 250, "김준호": 250, "김우성": 250, "오수환": 250, "이재윤": 250, "정원호": 250, "지승현": 250, "권오훈": 250, "성재훈": 250, "장인태": 250, "이중민": 250, "박상혁": 250, "도자": 250, "김동욱": 257}, "settled": false, "fee": false}, {"day": 5, "at": "2026-09-17T02:59:39.912+00:00", "cat": "교통", "note": "렌터카 반납 주유", "payer": "정원호", "amt": 4750, "cur": "JPY", "krw": 41903, "shares": {"이수형": 2993, "김준호": 2993, "김우성": 2993, "오수환": 2993, "이재윤": 2993, "정원호": 2993, "지승현": 2993, "권오훈": 2993, "성재훈": 2993, "장인태": 2993, "이중민": 2993, "박상혁": 2993, "도자": 2993, "김동욱": 2994}, "settled": false, "fee": false}, {"day": 5, "at": "2026-09-17T05:18:00+00:00", "cat": "교통", "note": "기름값", "payer": "공금", "amt": 31850, "cur": "KRW", "krw": 31850, "shares": {"이수형": 2275, "김준호": 2275, "김우성": 2275, "오수환": 2275, "이재윤": 2275, "정원호": 2275, "지승현": 2275, "권오훈": 2275, "성재훈": 2275, "장인태": 2275, "이중민": 2275, "박상혁": 2275, "도자": 2275, "김동욱": 2275}, "settled": false, "fee": false}, {"day": 5, "at": "2026-09-17T06:57:17.021+00:00", "cat": "교통", "note": "위탁수하물", "payer": "이재윤", "amt": 3000, "cur": "JPY", "krw": 26465, "shares": {"김준호": 26465}, "settled": true, "fee": false}], "startDate": "2026-09-13", "tour": {"n": 12, "out": ["김준호", "지승현"]}};
+const won = (n) => Math.round(n).toLocaleString("ko-KR") + "원";
+const yen = (n) => "¥" + n.toLocaleString("ko-KR");
+const DAY = ["출발 전", "9/13 (일)", "9/14 (월)", "9/15 (화)", "9/16 (수)", "9/17 (목)"];
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+// names
+const namesEl = $("names");
+D.people.forEach((p) => {
+  const b = document.createElement("button");
+  b.textContent = p;
+  b.setAttribute("aria-pressed", "false");
+  b.onclick = () => pick(p, true);
+  namesEl.appendChild(b);
+});
+
+function copyBtn(amount) {
+  return `<button class="copy" data-copy="${amount}">금액 복사</button>`;
+}
+document.addEventListener("click", async (ev) => {
+  const b = ev.target.closest("[data-copy]");
+  if (!b) return;
+  try { await navigator.clipboard.writeText(b.dataset.copy); b.textContent = "복사됨"; b.classList.add("done"); }
+  catch { b.textContent = b.dataset.copy; }
+  setTimeout(() => { b.textContent = "금액 복사"; b.classList.remove("done"); }, 1600);
+});
+
+let view = "mine";
+function pick(name, scroll) {
+  [...namesEl.children].forEach((b) => b.setAttribute("aria-pressed", String(b.textContent === name)));
+  try { localStorage.setItem("ishigaki-me", name); } catch {}
+  history.replaceState(null, "", "#" + encodeURIComponent(name));
+  renderMe(name);
+  if (scroll) $("me").scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+}
+
+function renderMe(me) {
+  const el = $("me");
+  const rows = D.rows.filter((r) => !r.settled && (r.payer === me || me in r.shares));
+  const off = D.rows.filter((r) => r.settled && (r.payer === me || me in r.shares));
+
+  let fee = 0, paid = 0, sPot = 0, sOther = 0, sSelf = 0;
+  for (const r of rows) {
+    if (r.payer === me) { if (r.fee) fee += r.krw; else paid += r.krw; }
+    const s = r.shares[me] || 0;
+    if (r.fee) continue;
+    if (r.payer === "공금") sPot += s; else if (r.payer === me) sSelf += s; else sOther += s;
+  }
+  const bal = D.balance[me];
+  const isT = me === D.treasurer;
+  const net = D.net[me];
+  const out = D.transfers.filter((t) => t.from === me);
+  const inc = D.transfers.filter((t) => t.to === me);
+
+  let verdict;
+  if (net < 0) {
+    verdict = `<div class="label">보낼 돈</div><div class="big neg num">${won(-net)}</div>` +
+      out.map((t) => `<div class="send"><div class="who">${esc(t.to)}에게</div><div style="display:flex;align-items:center;gap:10px"><span class="amt num">${won(t.amt)}</span>${copyBtn(t.amt)}</div></div>`).join("");
+  } else {
+    verdict = `<div class="label">받을 돈</div><div class="big pos num">${won(net)}</div>` +
+      inc.map((t) => `<div class="send"><div class="who">${esc(t.from)}<small>이 보내요</small></div><span class="amt num">${won(t.amt)}</span></div>`).join("") +
+      `<div class="note">받기만 하면 돼요. 보낼 곳은 없어요.</div>`;
+  }
+  if (net < 0 && !isT) verdict += `<div class="note">이 한 번이면 끝이에요.</div>`;
+
+  const share = sPot + sOther + sSelf;
+  let eq = `<div class="eq num">
+    <div class="k t">내가 낸 돈</div><div class="v t">${won(fee + paid)}</div>
+    <div class="k ind">회비</div><div class="v ind">${won(fee)}</div>
+    <div class="k ind">내 카드·현금으로 결제</div><div class="v ind">${won(paid)}</div>
+    <hr>
+    <div class="k t">내 몫으로 쓴 돈</div><div class="v t">− ${won(share)}</div>
+    <div class="k ind">공금으로 낸 것 중 내 몫</div><div class="v ind">${won(sPot)}</div>
+    <div class="k ind">친구가 낸 것 중 내 몫</div><div class="v ind">${won(sOther)}</div>
+    <div class="k ind">내가 낸 것 중 내 몫</div><div class="v ind">${won(sSelf)}</div>
+    <hr>
+    <div class="k t">${bal >= 0 ? "받을 돈" : "보낼 돈"}</div><div class="v t ${bal >= 0 ? "pos" : "neg"}">${won(Math.abs(bal))}</div>`;
+  if (isT) eq += `
+    <div class="k ind">총무로 보관 중인 공금 남은 돈</div><div class="v ind">− ${won(D.potLeft)}</div>
+    <hr>
+    <div class="k t">실제로 보낼 돈</div><div class="v t neg">${won(-net)}</div>`;
+  eq += `</div>`;
+  let eqNote = `<div class="note">회비 50만원은 공금 통장에 들어가서 숙소·렌터카·다 같이 먹은 저녁 같은 데 쓰였어요. 그중 내 몫은 위 "공금으로 낸 것 중 내 몫"이에요.</div>`;
+  if (isT) eqNote += `<div class="note">공금 남은 돈 ${won(D.potLeft)}이 수형님 통장에 있어서, 그 돈을 친구들에게 직접 나눠 보내는 걸로 송금 횟수를 줄였어요. 수형님만 여러 번 보내는 이유예요.</div>`;
+
+  // item list grouped by day
+  const days = {};
+  for (const r of rows.concat(off)) (days[r.day] ??= []).push(r);
+  const list = Object.keys(days).sort((a, b) => a - b).map((d) => {
+    const items = days[d].map((r) => {
+      const s = r.shares[me] || 0;
+      const orig = r.cur === "JPY" ? `${yen(r.amt)} · ` : "";
+      const who = r.payer === "공금" ? `<span class="tag pot">공금</span>` : r.payer === me ? `<span class="tag mine">내가 냄</span>` : `<span class="tag">${esc(r.payer)}</span>`;
+      const n = Object.keys(r.shares).length;
+      if (r.fee) return `<div class="item"><div><div class="n">회비 입금${who}</div><div class="m">공금 통장으로</div></div><div class="s num">${won(r.krw)}<small>낸 돈</small></div></div>`;
+      const right = r.settled ? `<div class="s num">—<small>그 자리에서 나눔</small></div>`
+        : `<div class="s num">${s ? won(s) : "—"}<small>${s ? "내 몫" : "내 몫 없음"}${r.payer === me ? " · " + won(r.krw) + " 냄" : ""}</small></div>`;
+      return `<div class="item${r.settled ? " off" : ""}"><div><div class="n">${esc(r.note || r.cat)}${who}</div><div class="m">${orig}${won(r.krw)} · ${n}명</div></div>${right}</div>`;
+    }).join("");
+    return `<div class="day">${DAY[d] ?? d + "일차"}</div><div class="card">${items}</div>`;
+  }).join("");
+
+  el.innerHTML = `
+    <h2>${esc(me)}님</h2>
+    <div class="card verdict fade">${verdict}</div>
+    <h2>왜 이 금액인가요</h2>
+    <div class="card fade">${eq}${eqNote}</div>
+    <h2>내가 낀 지출 · ${rows.length + off.length}건</h2>
+    <div class="fade">${list}</div>
+    ${off.length ? `<div class="note" style="padding:0 4px">흐리게 보이는 건 그 자리에서 이미 나눠 낸 거라 계산에서 뺐어요.</div>` : ""}`;
+  el.hidden = false;
+  renderAll(me);
+}
+
+// pot
+(() => {
+  const fees = D.rows.filter((r) => r.fee).reduce((a, r) => a + r.krw, 0);
+  const potRows = D.rows.filter((r) => r.payer === "공금" && !r.fee);
+  const spent = potRows.reduce((a, r) => a + r.krw, 0);
+  $("pot").innerHTML = `
+    <div class="eq num">
+      <div class="k t">회비 14명 × 50만원</div><div class="v t">${won(fees)}</div>
+      ${potRows.map((r) => `<div class="k ind">${DAY[r.day]} · ${esc(r.note)}${r.cur === "JPY" ? ` (${yen(r.amt)})` : ""}</div><div class="v ind">− ${won(r.krw)}</div>`).join("")}
+      <hr>
+      <div class="k t">남은 돈 (총무 ${esc(D.treasurer)} 보관)</div><div class="v t">${won(fees - spent)}</div>
+    </div>
+    <div class="note">공금 지출은 전부 14명이 똑같이 나눴어요.</div>
+    <details style="margin-top:10px"><summary>스노클링은 왜 여기 없나요?</summary>
+      <div class="note" style="margin-top:6px">출발 전에 공금으로 결제한 푸른동굴 투어(1,667,793원)는 환불돼 공금으로 돌아왔어요. 대신 현지에서 이중민님이 거북이투어(¥189,694)를 결제했고, 간 사람 ${esc(D.tour.n)}명이 나눠요${D.tour.out.length ? ` (${D.tour.out.map(esc).join(", ")} 제외)` : ""}.</div>
+    </details>`;
+})();
+
+// all transfers
+function renderAll(me) {
+  $("all").innerHTML = D.transfers.map((t) => {
+    const cls = me && (t.from === me || t.to === me) ? "hl" : me ? "dim" : "";
+    return `<div class="tr ${cls}"><div>${esc(t.from)} → ${esc(t.to)}</div><div class="num">${won(t.amt)}</div></div>`;
+  }).join("") + `<div class="note">14명이 서로 주고받는 걸 13번 송금으로 줄였어요. 이보다 적게는 안 돼요. 수형님 말고는 모두 한 번만 보내면 돼요.</div>`;
+}
+renderAll(null);
+
+let start = null;
+try { start = decodeURIComponent(location.hash.slice(1)) || localStorage.getItem("ishigaki-me"); } catch {}
+if (start && D.people.includes(start)) pick(start, false);
+</script>
+</body>
+</html>
